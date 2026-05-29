@@ -1,5 +1,15 @@
 # Setup Guide — Deploying Revision Extension to a New BTP Subaccount
 
+> **⚠️ PARTIALLY APPLICABLE — SOME STEPS ASSUME THE PHASE-2 AUTH LAYER**
+>
+> Steps 1–8 (clone, install, destination, auth key, CF login, service binding,
+> build, push) apply to the current skeleton. Steps 9–13 assume the Phase-2
+> security layer from [SECURITY.md](SECURITY.md) is already implemented — they
+> grep for `API mounted at /api/v1`, expect `/api/v1/*` calls to return 401
+> without a session, and check `SHELL-INIT` / `WC-ACCESS-POINT` log lines that
+> the current `index.js` does not emit. Until Phase 2 is built, those checks
+> will not pass and that is expected, not a deployment failure.
+
 > **Audience:** A developer (you, a colleague, or a future maintainer) setting up
 > a fresh deployment of this app from the GitHub repository to a different BTP
 > subaccount, dev space, or after losing access to an existing deployment.

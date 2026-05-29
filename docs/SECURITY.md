@@ -1,5 +1,18 @@
 # Security Architecture
 
+> **⚠️ IMPLEMENTATION STATUS — TARGET ARCHITECTURE, NOT YET BUILT**
+>
+> This document specifies the *intended* security model for the Revision
+> Extension. As of May 2026, the app is a renamed skeleton: it does **not** yet
+> implement `requireSession`, `FSMJwtValidator.js`, the `/api/v1/*` routes,
+> Authentication-Key validation, the `/api/v1/shell-session-init` endpoint, or
+> Bearer/cookie session handling. The current `index.js` uses a simple in-memory
+> session map with no inbound authentication.
+>
+> Treat every section below as the **Phase-2 build spec** — the checklist for
+> what to implement, not a description of current behaviour. Remove or update
+> this banner once the auth layer is built and matches the document.
+
 > **Status:** Approved deviation from BTP coding guideline (Programmierrichtlinie für SAP-Erweiterungen §10).
 > **Last updated:** April 2026 (cleanup pass — removed dead cookie path and request-gate machinery)
 > **Owner:** [Team or person responsible — fill in]
