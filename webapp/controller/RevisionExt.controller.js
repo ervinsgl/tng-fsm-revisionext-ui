@@ -5,7 +5,7 @@ sap.ui.define([
 ], (Controller, JSONModel, ContextService) => {
     "use strict";
 
-    return Controller.extend("mobileappwebcontainer.controller.View1", {
+    return Controller.extend("mobileappwebcontainer.controller.RevisionExt", {
  
         onInit() {
             this.getView().setModel(new JSONModel({
