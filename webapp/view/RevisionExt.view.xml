@@ -1,5 +1,5 @@
 <mvc:View
-    controllerName="mobileappwebcontainer.controller.View1"
+    controllerName="mobileappwebcontainer.controller.RevisionExt"
     xmlns:mvc="sap.ui.core.mvc"
     xmlns="sap.m"
     xmlns:layout="sap.ui.layout"
