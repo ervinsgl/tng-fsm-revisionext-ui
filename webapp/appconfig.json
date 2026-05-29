@@ -1,7 +1,7 @@
 {
     "name": "FSM Revision extension",
     "provider": "TUEV NORD",
-    "description": "FSM Revision extension for activities",
+    "description": "FSM Revision extension for activity",
     "version": "1.0.0",
     "icon": "sap-icon://biometric-thumb"
 }
