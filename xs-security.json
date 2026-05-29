@@ -1,5 +1,5 @@
 {
-  "xsappname": "mobileappwebcontainer",
+  "xsappname": "com.tng.fsm.revisionext.app",
   "tenant-mode": "dedicated",
   "description": "Security profile of called application",
   "scopes": [],

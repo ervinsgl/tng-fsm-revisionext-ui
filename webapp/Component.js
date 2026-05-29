@@ -1,10 +1,10 @@
 sap.ui.define([
     "sap/ui/core/UIComponent",
-    "mobileappwebcontainer/model/models"
+    "com/tng/fsm/revisionext/app/model/models"
 ], (UIComponent, models) => {
     "use strict";
 
-    return UIComponent.extend("mobileappwebcontainer.Component", {
+    return UIComponent.extend("com.tng.fsm.revisionext.app.Component", {
         metadata: {
             manifest: "json",
             interfaces: [

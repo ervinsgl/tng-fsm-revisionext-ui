@@ -2,7 +2,7 @@
 
 specVersion: "4.0"
 metadata:
-  name: mobileappwebcontainer
+  name: com.tng.fsm.revisionext.app
 type: application
 framework:
   name: SAPUI5

@@ -1,11 +1,11 @@
 sap.ui.define([
     "sap/ui/core/mvc/Controller",
     "sap/ui/model/json/JSONModel",
-    "mobileappwebcontainer/utils/ContextService"
+    "com/tng/fsm/revisionext/app/utils/ContextService"
 ], (Controller, JSONModel, ContextService) => {
     "use strict";
 
-    return Controller.extend("mobileappwebcontainer.controller.RevisionExt", {
+    return Controller.extend("com.tng.fsm.revisionext.app.controller.RevisionExt", {
  
         onInit() {
             this.getView().setModel(new JSONModel({
