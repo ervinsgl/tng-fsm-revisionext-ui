@@ -1,0 +1,95 @@
+<mvc:View
+    controllerName="mobileappwebcontainer.controller.View1"
+    xmlns:mvc="sap.ui.core.mvc"
+    xmlns="sap.m"
+    xmlns:layout="sap.ui.layout"
+    xmlns:core="sap.ui.core"
+    displayBlock="true">
+ 
+    <Page
+        id="page"
+        showNavButton="false"
+        showHeader="true"
+        busy="{view>/busy}"
+        busyIndicatorDelay="0">
+ 
+        <customHeader>
+            <OverflowToolbar design="Info">
+                <core:Icon src="sap-icon://connected" class="sapUiTinyMarginEnd" />
+                <Title text="FSM Web Container" level="H4" />
+                <ToolbarSpacer />
+                <ObjectStatus
+                    text="{= ${view>/context/source} === 'mobile' ? 'Mobile App' : 'Web UI' }"
+                    state="Success"
+                    visible="{view>/contextLoaded}" />
+                <ObjectStatus
+                    text="{view>/context/objectType}"
+                    state="Information"
+                    visible="{view>/contextLoaded}" />
+            </OverflowToolbar>
+        </customHeader>
+ 
+        <content>
+ 
+            <!-- Not opened from FSM -->
+            <IllustratedMessage
+                visible="{view>/showError}"
+                illustrationType="sapIllus-NoMail"
+                title="Open from FSM"
+                description="Open this app from FSM Mobile (Web Container) or FSM Web UI (Shell Extension)." />
+ 
+            <!-- Context loaded -->
+            <layout:VerticalLayout
+                visible="{view>/contextLoaded}"
+                width="100%"
+                class="sapUiContentPadding">
+ 
+                <List
+                    id="contextList"
+                    headerText="Session Context"
+                    mode="None"
+                    showSeparators="Inner">
+ 
+                    <ObjectListItem
+                        title="{view>/context/userName}"
+                        intro="User"
+                        icon="sap-icon://account" />
+ 
+                    <ObjectListItem
+                        title="{view>/context/companyName}"
+                        intro="Company"
+                        icon="sap-icon://factory" />
+ 
+                    <ObjectListItem
+                        title="{view>/context/cloudAccount}"
+                        intro="Cloud Account"
+                        icon="sap-icon://cloud" />
+ 
+                    <ObjectListItem
+                        title="{view>/context/cloudId}"
+                        intro="Cloud ID / Object ID"
+                        icon="sap-icon://key-user-settings" />
+ 
+                    <ObjectListItem
+                        title="{view>/context/objectType}"
+                        intro="Object Type"
+                        icon="sap-icon://activity-2" />
+ 
+                    <ObjectListItem
+                        title="{view>/context/language}"
+                        intro="Language"
+                        icon="sap-icon://globe" />
+ 
+                    <ObjectListItem
+                        title="{view>/context/dataCloudFullQualifiedDomainName}"
+                        intro="FSM Cloud Domain"
+                        icon="sap-icon://world" />
+ 
+                </List>
+ 
+            </layout:VerticalLayout>
+ 
+        </content>
+ 
+    </Page>
+</mvc:View>

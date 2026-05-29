@@ -1,0 +1,7 @@
+{
+    "name": "Template",
+    "provider": "TUEV NORD",
+    "description": "Provides Object Context",
+    "version": "1.0.0",
+    "icon": "sap-icon://biometric-thumb"
+}
