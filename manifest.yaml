@@ -1,6 +1,6 @@
 applications:
-  - name: mobileappwebcontainer
-    memory: 256M
+  - name: tng-fsm-revisionext-ui-dev
+    memory: 512M
     disk_quota: 512M
     instances: 1
     buildpacks:
@@ -8,6 +8,6 @@ applications:
     command: npm start
     path: .
     routes:
-      - route: mobileappwebcontainer-webcontainer-test-op.cfapps.eu10.hana.ondemand.com
+      - route: tng-fsm-revisionext-ui-dev-fsm-dev-op.cfapps.eu10-004.hana.ondemand.com
     services:
-      - mobileappwebcontainer-destination
+      - fsm-revisionext-destination-dev
