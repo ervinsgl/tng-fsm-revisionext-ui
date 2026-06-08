@@ -15,6 +15,7 @@
 
 const express = require('express');
 const path = require('path');
+const FSMService = require('./utils/FSMService');
 
 const app = express();
 
@@ -126,6 +127,31 @@ app.get('/web-container-context', (req, res) => {
     // Return context without the internal timestamp field
     const { _timestamp, ...contextData } = context;
     return res.json(contextData);
+});
+
+/**
+ * GET /api/checklist-instances?objectId=<activityObjectId>
+ *
+ * Returns all closed ChecklistInstances (smartforms) for the given Activity
+ * objectId, shaped for the UI list: [{ id, description }].
+ *
+ * objectId is the cloudId resolved from the FSM context (mobile or shell),
+ * passed by the frontend. This keeps the route source-agnostic.
+ */
+app.get('/api/checklist-instances', async (req, res) => {
+    const objectId = req.query.objectId;
+
+    if (!objectId) {
+        return res.status(400).json({ message: 'Missing objectId query parameter.' });
+    }
+
+    try {
+        const instances = await FSMService.getChecklistInstancesForActivity(objectId);
+        return res.json({ data: instances });
+    } catch (error) {
+        console.error('checklist-instances route error:', error.message);
+        return res.status(502).json({ message: 'Failed to fetch checklist instances from FSM.' });
+    }
 });
 
 // ===========================
