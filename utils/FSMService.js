@@ -6,14 +6,16 @@
  * Scope (revision extension):
  * - Authenticated Query API requests (/api/query/v1)
  * - Read closed ChecklistInstances (smartforms) for an Activity, enrich each
- *   with its ChecklistTemplate name, and filter to those tagged "Inspection".
+ *   with its ChecklistTemplate name, filter to those tagged "Inspection", and
+ *   attach their Attachment file names.
  *
  * Query chain (no CoreSQL joins; JS glue between sequential HTTP queries,
  * using IN clauses with deduplicated, batched IDs - no per-row looping):
  *   1. ChecklistInstance  WHERE object.objectId = <activity> AND closed = true
  *   2. ChecklistTemplate  WHERE id IN (<distinct template ids>)   -> name, tags
  *   3. ChecklistTag       WHERE id IN (<distinct tag ids>)        -> name
- * Then keep only instances whose template carries the "Inspection" tag.
+ *   --> keep only instances whose template carries the "Inspection" tag
+ *   4. Attachment         WHERE sourceObject.objectId IN (<surviving ids>)
  *
  * The outbound destination name is defined ONCE below (DESTINATION_NAME).
  * If the destination ever changes, change it in that single place.
@@ -188,12 +190,42 @@ class FSMService {
     }
 
     /**
+     * Query 4 - Attachments for a set of source objects (batched IN clause).
+     * Groups results by sourceObject.objectId, since one smartform may have
+     * several attachments.
+     * @param {Array<string>} sourceObjectIds - ChecklistInstance UUIDs
+     * @returns {Promise<Map<string, Array<{id: string, fileName: string}>>>}
+     *          Map of sourceObject id -> array of attachments.
+     * @private
+     */
+    async _getAttachmentsBySourceIds(sourceObjectIds) {
+        const inList = this._toInList(sourceObjectIds);
+        if (!inList) return new Map();
+
+        const query = `SELECT w FROM Attachment w WHERE w.sourceObject.objectId IN (${inList})`;
+        const data = await this.makeQueryRequest(query, 'Attachment.19');
+
+        const map = new Map();
+        if (data.data) {
+            data.data.forEach(item => {
+                const w = item.w;
+                const srcId = w && w.sourceObject ? w.sourceObject.objectId : null;
+                if (!srcId) return;
+                if (!map.has(srcId)) map.set(srcId, []);
+                map.get(srcId).push({ id: w.id, fileName: w.fileName || null });
+            });
+        }
+        return map;
+    }
+
+    /**
      * Orchestrate the three-query chain for an Activity and return the
      * smartforms whose template is tagged "Inspection".
      *
      * @param {string} objectId - Activity objectId from the FSM context
-     * @returns {Promise<Array<{id: string, description: string, name: string}>>}
-     *          UI-shaped list. Only Inspection-tagged instances are included.
+     * @returns {Promise<Array<{id: string, description: string, name: string, attachments: Array<{id: string, fileName: string}>}>>}
+     *          UI-shaped list. Only Inspection-tagged instances are included,
+     *          each with its attachments (may be empty).
      */
     async getInspectionSmartformsForActivity(objectId) {
         try {
@@ -225,8 +257,18 @@ class FSMService {
                 result.push({
                     id: inst.id,
                     description: inst.description,
-                    name: tmpl.name || null
+                    name: tmpl.name || null,
+                    attachments: []
                 });
+            });
+
+            if (result.length === 0) return [];
+
+            // 4) Attachments for the surviving smartforms only (batched IN).
+            const survivingIds = result.map(r => r.id);
+            const attachmentMap = await this._getAttachmentsBySourceIds(survivingIds);
+            result.forEach(r => {
+                r.attachments = attachmentMap.get(r.id) || [];
             });
 
             return result;

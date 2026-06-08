@@ -98,14 +98,23 @@
                     showSeparators="Inner"
                     noDataText="No smartforms found for this activity.">
 
-                    <ObjectListItem
-                        title="{view>name}"
-                        intro="Smartform"
-                        icon="sap-icon://document-text">
-                        <attributes>
-                            <ObjectAttribute text="{view>description}" />
-                        </attributes>
-                    </ObjectListItem>
+                    <CustomListItem>
+                        <VBox class="sapUiSmallMargin">
+                            <ObjectIdentifier title="{view>name}" text="{view>description}" />
+                            <VBox
+                                items="{view>attachments}"
+                                class="sapUiSmallMarginTop">
+                                <HBox alignItems="Center" class="sapUiTinyMarginBegin">
+                                    <core:Icon src="sap-icon://attachment" class="sapUiTinyMarginEnd" />
+                                    <Text text="{view>fileName}" />
+                                </HBox>
+                            </VBox>
+                            <Text
+                                text="No attachments"
+                                visible="{= ${view>attachments}.length === 0 }"
+                                class="sapUiTinyMarginBegin sapUiSmallMarginTop" />
+                        </VBox>
+                    </CustomListItem>
 
                 </List>
 
