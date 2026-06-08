@@ -99,9 +99,13 @@
                     noDataText="No smartforms found for this activity.">
 
                     <ObjectListItem
-                        title="{view>description}"
-                        intro="Smartform Description"
-                        icon="sap-icon://document-text" />
+                        title="{view>name}"
+                        intro="Smartform"
+                        icon="sap-icon://document-text">
+                        <attributes>
+                            <ObjectAttribute text="{view>description}" />
+                        </attributes>
+                    </ObjectListItem>
 
                 </List>
 

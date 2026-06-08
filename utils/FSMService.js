@@ -5,7 +5,15 @@
  *
  * Scope (revision extension):
  * - Authenticated Query API requests (/api/query/v1)
- * - Read closed ChecklistInstances (smartforms) for an Activity
+ * - Read closed ChecklistInstances (smartforms) for an Activity, enrich each
+ *   with its ChecklistTemplate name, and filter to those tagged "Inspection".
+ *
+ * Query chain (no CoreSQL joins; JS glue between sequential HTTP queries,
+ * using IN clauses with deduplicated, batched IDs - no per-row looping):
+ *   1. ChecklistInstance  WHERE object.objectId = <activity> AND closed = true
+ *   2. ChecklistTemplate  WHERE id IN (<distinct template ids>)   -> name, tags
+ *   3. ChecklistTag       WHERE id IN (<distinct tag ids>)        -> name
+ * Then keep only instances whose template carries the "Inspection" tag.
  *
  * The outbound destination name is defined ONCE below (DESTINATION_NAME).
  * If the destination ever changes, change it in that single place.
@@ -26,6 +34,12 @@ const TokenCache = require('./TokenCache');
  * @type {string}
  */
 const DESTINATION_NAME = 'FSM_S4E';
+
+/**
+ * The tag name a smartform's template must carry to be shown.
+ * @type {string}
+ */
+const REQUIRED_TAG = 'Inspection';
 
 class FSMService {
     constructor() {
@@ -81,38 +95,143 @@ class FSMService {
         }
     }
 
+    /**
+     * Build a CoreSQL IN-list literal from an array of UUIDs.
+     * Deduplicates and quotes each value: ['a','b'] -> "'a','b'".
+     * @param {Array<string>} ids
+     * @returns {string} comma-separated quoted list (empty string if no ids)
+     * @private
+     */
+    _toInList(ids) {
+        const unique = [...new Set((ids || []).filter(Boolean))];
+        return unique.map(id => `'${id}'`).join(',');
+    }
+
     // ========================================
     // CHECKLIST INSTANCES (SMARTFORMS)
     // ========================================
 
     /**
-     * Get all closed ChecklistInstances (smartforms) for an Activity.
+     * Query 1 - closed ChecklistInstances for an Activity.
+     * Carries the template UUID through so the chain can resolve names/tags.
      *
      * @param {string} objectId - Activity objectId from the FSM context
-     * @returns {Promise<Array<{id: string, description: string}>>}
-     *          List shaped for the UI. `description` falls back to the ID
-     *          when the source description is empty.
+     * @returns {Promise<Array<{id: string, description: string, template: string}>>}
+     * @private
      */
-    async getChecklistInstancesForActivity(objectId) {
+    async _getChecklistInstances(objectId) {
+        const query = `SELECT w FROM ChecklistInstance w WHERE w.object.objectId = '${objectId}' AND w.closed = true`;
+        const data = await this.makeQueryRequest(query, 'ChecklistInstance.20');
+
+        if (!data.data || data.data.length === 0) return [];
+
+        return data.data.map(item => {
+            const w = item.w;
+            const desc = (w.description && w.description.trim()) ? w.description.trim() : null;
+            return {
+                id: w.id,
+                // Smartform Description: real description, else fall back to the ID.
+                description: desc ? `${desc} (${w.id})` : w.id,
+                template: w.template || null
+            };
+        });
+    }
+
+    /**
+     * Query 2 - ChecklistTemplates by id (batched IN clause).
+     * Requests w.id explicitly so results can be keyed back to instances.
+     * @param {Array<string>} templateIds
+     * @returns {Promise<Map<string, {name: string, tags: Array<string>}>>}
+     * @private
+     */
+    async _getTemplatesByIds(templateIds) {
+        const inList = this._toInList(templateIds);
+        if (!inList) return new Map();
+
+        const query = `SELECT w.id, w.name, w.tags FROM ChecklistTemplate w WHERE w.id IN (${inList})`;
+        const data = await this.makeQueryRequest(query, 'ChecklistTemplate.21');
+
+        const map = new Map();
+        if (data.data) {
+            data.data.forEach(item => {
+                const w = item.w;
+                if (w && w.id) {
+                    map.set(w.id, { name: w.name || null, tags: w.tags || [] });
+                }
+            });
+        }
+        return map;
+    }
+
+    /**
+     * Query 3 - ChecklistTag names by id (batched IN clause).
+     * Requests w.id explicitly so each name maps back to its tag UUID.
+     * @param {Array<string>} tagIds
+     * @returns {Promise<Map<string, string>>} Map of tag id -> tag name.
+     * @private
+     */
+    async _getTagNamesByIds(tagIds) {
+        const inList = this._toInList(tagIds);
+        if (!inList) return new Map();
+
+        const query = `SELECT w.id, w.name FROM ChecklistTag w WHERE w.id IN (${inList})`;
+        const data = await this.makeQueryRequest(query, 'ChecklistTag.10');
+
+        const map = new Map();
+        if (data.data) {
+            data.data.forEach(item => {
+                const w = item.w;
+                if (w && w.id) map.set(w.id, w.name || null);
+            });
+        }
+        return map;
+    }
+
+    /**
+     * Orchestrate the three-query chain for an Activity and return the
+     * smartforms whose template is tagged "Inspection".
+     *
+     * @param {string} objectId - Activity objectId from the FSM context
+     * @returns {Promise<Array<{id: string, description: string, name: string}>>}
+     *          UI-shaped list. Only Inspection-tagged instances are included.
+     */
+    async getInspectionSmartformsForActivity(objectId) {
         try {
             if (!objectId) return [];
 
-            const query = `SELECT w FROM ChecklistInstance w WHERE w.object.objectId = '${objectId}' AND w.closed = true`;
-            const data = await this.makeQueryRequest(query, 'ChecklistInstance.20');
+            // 1) Instances for the activity.
+            const instances = await this._getChecklistInstances(objectId);
+            if (instances.length === 0) return [];
 
-            if (!data.data || data.data.length === 0) return [];
+            // 2) Resolve template name + tags for all distinct templates at once.
+            const templateIds = instances.map(i => i.template).filter(Boolean);
+            const templateMap = await this._getTemplatesByIds(templateIds);
 
-            return data.data.map(item => {
-                const w = item.w;
-                const desc = (w.description && w.description.trim()) ? w.description.trim() : null;
-                return {
-                    id: w.id,
-                    // Smartform Description: real description, else fall back to the ID.
-                    description: desc ? `${desc} (${w.id})` : w.id
-                };
+            // 3) Resolve all distinct tag UUIDs across those templates at once.
+            const allTagIds = [];
+            templateMap.forEach(t => { (t.tags || []).forEach(id => allTagIds.push(id)); });
+            const tagNameMap = await this._getTagNamesByIds(allTagIds);
+
+            // Glue: attach template name, decide Inspection membership, filter.
+            const result = [];
+            instances.forEach(inst => {
+                const tmpl = inst.template ? templateMap.get(inst.template) : null;
+                if (!tmpl) return; // no template resolved -> cannot qualify
+
+                const tagNames = (tmpl.tags || []).map(id => tagNameMap.get(id)).filter(Boolean);
+                const isInspection = tagNames.includes(REQUIRED_TAG);
+                if (!isInspection) return; // filtered out
+
+                result.push({
+                    id: inst.id,
+                    description: inst.description,
+                    name: tmpl.name || null
+                });
             });
+
+            return result;
         } catch (error) {
-            console.error('FSMService: Error fetching checklist instances:', error.message);
+            console.error('FSMService: Error building inspection smartforms:', error.message);
             return [];
         }
     }

@@ -146,7 +146,7 @@ app.get('/api/checklist-instances', async (req, res) => {
     }
 
     try {
-        const instances = await FSMService.getChecklistInstancesForActivity(objectId);
+        const instances = await FSMService.getInspectionSmartformsForActivity(objectId);
         return res.json({ data: instances });
     } catch (error) {
         console.error('checklist-instances route error:', error.message);
