@@ -44,79 +44,90 @@
                 width="100%"
                 class="sapUiContentPadding">
 
-                <List
-                    id="contextList"
+                <Panel
                     headerText="Session Context"
-                    mode="None"
-                    showSeparators="Inner">
+                    expandable="true"
+                    expanded="false"
+                    class="sapUiResponsiveMargin"
+                    width="auto">
 
-                    <ObjectListItem
-                        title="{view>/context/userName}"
-                        intro="User"
-                        icon="sap-icon://account" />
+                    <List
+                        id="contextList"
+                        mode="None"
+                        showSeparators="Inner">
 
-                    <ObjectListItem
-                        title="{view>/context/companyName}"
-                        intro="Company"
-                        icon="sap-icon://factory" />
+                        <ObjectListItem
+                            title="{view>/context/userName}"
+                            intro="User"
+                            icon="sap-icon://account" />
 
-                    <ObjectListItem
-                        title="{view>/context/cloudAccount}"
-                        intro="Cloud Account"
-                        icon="sap-icon://cloud" />
+                        <ObjectListItem
+                            title="{view>/context/companyName}"
+                            intro="Company"
+                            icon="sap-icon://factory" />
 
-                    <ObjectListItem
-                        title="{view>/context/cloudId}"
-                        intro="Cloud ID / Object ID"
-                        icon="sap-icon://key-user-settings" />
+                        <ObjectListItem
+                            title="{view>/context/cloudAccount}"
+                            intro="Cloud Account"
+                            icon="sap-icon://cloud" />
 
-                    <ObjectListItem
-                        title="{view>/context/objectType}"
-                        intro="Object Type"
-                        icon="sap-icon://activity-2" />
+                        <ObjectListItem
+                            title="{view>/context/cloudId}"
+                            intro="Cloud ID / Object ID"
+                            icon="sap-icon://key-user-settings" />
 
-                    <ObjectListItem
-                        title="{view>/context/language}"
-                        intro="Language"
-                        icon="sap-icon://globe" />
+                        <ObjectListItem
+                            title="{view>/context/objectType}"
+                            intro="Object Type"
+                            icon="sap-icon://activity-2" />
 
-                    <ObjectListItem
-                        title="{view>/context/dataCloudFullQualifiedDomainName}"
-                        intro="FSM Cloud Domain"
-                        icon="sap-icon://world" />
+                        <ObjectListItem
+                            title="{view>/context/language}"
+                            intro="Language"
+                            icon="sap-icon://globe" />
 
-                </List>
+                        <ObjectListItem
+                            title="{view>/context/dataCloudFullQualifiedDomainName}"
+                            intro="FSM Cloud Domain"
+                            icon="sap-icon://world" />
 
-                <!-- Smartforms (closed ChecklistInstances) for this Activity -->
-                <List
-                    id="smartformsList"
-                    headerText="Smartforms"
+                    </List>
+
+                </Panel>
+
+                <!-- Revisions table: one row per attachment -->
+                <Table
+                    id="revisionsTable"
+                    headerText="Revisionen"
                     busy="{view>/smartformsBusy}"
                     busyIndicatorDelay="0"
-                    items="{view>/smartforms}"
-                    mode="None"
-                    showSeparators="Inner"
-                    noDataText="No smartforms found for this activity.">
+                    items="{view>/rows}"
+                    growing="true"
+                    growingThreshold="50"
+                    class="sapUiResponsiveMargin"
+                    width="auto">
 
-                    <CustomListItem>
-                        <VBox class="sapUiSmallMargin">
-                            <ObjectIdentifier title="{view>name}" text="{view>description}" />
-                            <VBox
-                                items="{view>attachments}"
-                                class="sapUiSmallMarginTop">
-                                <HBox alignItems="Center" class="sapUiTinyMarginBegin">
-                                    <core:Icon src="sap-icon://attachment" class="sapUiTinyMarginEnd" />
-                                    <Text text="{view>fileName}" />
-                                </HBox>
-                            </VBox>
-                            <Text
-                                text="No attachments"
-                                visible="{= ${view>attachments}.length === 0 }"
-                                class="sapUiTinyMarginBegin sapUiSmallMarginTop" />
-                        </VBox>
-                    </CustomListItem>
+                    <columns>
+                        <Column><header><Text text="Smartform Description" /></header></Column>
+                        <Column><header><Text text="Smartform Name" /></header></Column>
+                        <Column><header><Text text="Attachment Description" /></header></Column>
+                        <Column><header><Text text="Attachment Name" /></header></Column>
+                        <Column><header><Text text="Revision/Report Name" /></header></Column>
+                    </columns>
 
-                </List>
+                    <items>
+                        <ColumnListItem>
+                            <cells>
+                                <Text text="{view>smartformDescription}" />
+                                <Text text="{view>smartformName}" />
+                                <Text text="{view>attachmentDescription}" />
+                                <Text text="{view>attachmentName}" />
+                                <Text text="{view>revisionName}" />
+                            </cells>
+                        </ColumnListItem>
+                    </items>
+
+                </Table>
 
             </layout:VerticalLayout>
 
