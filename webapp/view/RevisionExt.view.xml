@@ -95,34 +95,38 @@
 
                 </Panel>
 
-                <!-- Revisions table: one row per attachment -->
+                <!-- Activity revision tree: original first, then revisions -->
                 <Table
                     id="revisionsTable"
                     headerText="Revisionen"
-                    busy="{view>/smartformsBusy}"
+                    busy="{view>/revisionsBusy}"
                     busyIndicatorDelay="0"
-                    items="{view>/rows}"
+                    items="{view>/revisionRows}"
                     growing="true"
                     growingThreshold="50"
                     class="sapUiResponsiveMargin"
-                    width="auto">
+                    width="auto"
+                    noDataText="No activity revisions found.">
 
                     <columns>
-                        <Column><header><Text text="Smartform Description" /></header></Column>
-                        <Column><header><Text text="Smartform Name" /></header></Column>
-                        <Column><header><Text text="Attachment Description" /></header></Column>
-                        <Column><header><Text text="Attachment Name" /></header></Column>
-                        <Column><header><Text text="Revision/Report Name" /></header></Column>
+                        <Column width="9rem"><header><Text text="Revision" /></header></Column>
+                        <Column width="7rem"><header><Text text="Code" /></header></Column>
+                        <Column><header><Text text="Activity ID" /></header></Column>
+                        <Column><header><Text text="Subject" /></header></Column>
                     </columns>
 
                     <items>
-                        <ColumnListItem>
+                        <ColumnListItem
+                            highlight="{= ${view>isOriginal} ? 'Information' : 'None' }">
                             <cells>
-                                <Text text="{view>smartformDescription}" />
-                                <Text text="{view>smartformName}" />
-                                <Text text="{view>attachmentDescription}" />
-                                <Text text="{view>attachmentName}" />
-                                <Text text="{view>revisionName}" />
+                                <ObjectStatus
+                                    text="{view>revisionLabel}"
+                                    state="{= ${view>isOriginal} ? 'Information' : 'None' }"
+                                    icon="{= ${view>isOriginal} ? 'sap-icon://home' : 'sap-icon://history' }"
+                                    inverted="{view>isOriginal}" />
+                                <Text text="{view>code}" />
+                                <Text text="{view>id}" />
+                                <Text text="{view>subject}" />
                             </cells>
                         </ColumnListItem>
                     </items>

@@ -156,10 +156,13 @@ sap.ui.define([], () => {
                     try {
                         baseData = typeof event === "string" ? JSON.parse(event) : event;
 
-                        // ViewState can arrive inside the initial payload
+                        // ViewState can arrive inside the initial payload.
+                        // Prefer the *selected* ids: in the Web UI shell,
+                        // viewState.activityID can go stale while
+                        // selectedActivityId tracks the currently open activity.
                         const vs = baseData.viewState;
                         if (vs) {
-                            const actId = vs.activityID || vs.selectedActivityId || vs.activityId;
+                            const actId = vs.selectedActivityId || vs.activityID || vs.activityId;
                             const scId  = vs.selectedServiceCallId || vs.serviceCallID || vs.serviceCallId;
                             if (actId)      { objectId = actId; objectType = "ACTIVITY";    }
                             else if (scId)  { objectId = scId;  objectType = "SERVICECALL"; }

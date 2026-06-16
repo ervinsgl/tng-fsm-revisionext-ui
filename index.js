@@ -154,6 +154,31 @@ app.get('/api/checklist-instances', async (req, res) => {
     }
 });
 
+/**
+ * GET /api/activity-revisions?objectId=<activityId>
+ *
+ * Returns the activity revision tree for the given Activity: the original
+ * activity first, then its revisions ordered by revision number ascending.
+ * Each row: { isOriginal, revisionLabel, revisionNumber, id, code, subject }.
+ *
+ * objectId is the cloudId (Activity UUID) resolved from the FSM context.
+ */
+app.get('/api/activity-revisions', async (req, res) => {
+    const objectId = req.query.objectId;
+
+    if (!objectId) {
+        return res.status(400).json({ message: 'Missing objectId query parameter.' });
+    }
+
+    try {
+        const tree = await FSMService.getActivityRevisionTree(objectId);
+        return res.json({ data: tree });
+    } catch (error) {
+        console.error('activity-revisions route error:', error.message);
+        return res.status(502).json({ message: 'Failed to fetch activity revisions from FSM.' });
+    }
+});
+
 // ===========================
 // STATIC FILES (UI5 frontend)
 // ===========================

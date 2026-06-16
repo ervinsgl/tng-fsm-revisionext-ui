@@ -16,7 +16,9 @@ sap.ui.define([
                 context: {},
                 smartformsBusy: false,
                 smartforms: [],
-                rows: []
+                rows: [],
+                revisionsBusy: false,
+                revisionRows: []
             }), "view");
 
             this._loadContext();
@@ -42,6 +44,9 @@ sap.ui.define([
 
                 // Once we have the Activity UUID (cloudId), load its smartforms.
                 this._loadSmartforms(context.cloudId);
+
+                // Also load the activity revision tree for this activity.
+                this._loadRevisions(context.cloudId);
 
             } catch (error) {
                 console.warn("FSM context not available:", error.message);
@@ -71,6 +76,28 @@ sap.ui.define([
                 oModel.setProperty("/rows", []);
             } finally {
                 oModel.setProperty("/smartformsBusy", false);
+            }
+        },
+
+        async _loadRevisions(objectId) {
+            const oModel = this.getView().getModel("view");
+
+            if (!objectId) {
+                console.warn("No objectId in context; skipping revision load.");
+                return;
+            }
+
+            oModel.setProperty("/revisionsBusy", true);
+
+            try {
+                const revisionRows = await RevisionService.getActivityRevisions(objectId);
+                oModel.setProperty("/revisionRows", revisionRows);
+                console.log(`Loaded ${revisionRows.length} revision row(s) for ${objectId}`);
+            } catch (error) {
+                console.error("Failed to load revisions:", error.message);
+                oModel.setProperty("/revisionRows", []);
+            } finally {
+                oModel.setProperty("/revisionsBusy", false);
             }
         },
 

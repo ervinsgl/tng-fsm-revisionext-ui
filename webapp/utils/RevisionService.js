@@ -33,6 +33,24 @@ sap.ui.define([], () => {
 
             const data = await response.json();
             return data.data || [];
+        },
+
+        /**
+         * Fetch the activity revision tree for an Activity: original first,
+         * then revisions ordered by revision number ascending.
+         *
+         * @param {string} objectId - Activity UUID (context.cloudId)
+         * @returns {Promise<Array<{isOriginal: boolean, revisionLabel: string, revisionNumber: number|null, id: string, code: string|null, subject: string|null}>>}
+         */
+        async getActivityRevisions(objectId) {
+            if (!objectId) return [];
+
+            const url = `/api/activity-revisions?objectId=${encodeURIComponent(objectId)}`;
+            const response = await fetch(url);
+            if (!response.ok) throw new Error(`Activity revisions HTTP ${response.status}`);
+
+            const data = await response.json();
+            return data.data || [];
         }
 
     };
