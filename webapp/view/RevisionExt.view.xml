@@ -95,18 +95,6 @@
 
                 </Panel>
 
-                <!-- Create Revision action (acts across all smartform tables) -->
-                <Toolbar
-                    visible="{= !${view>/noSmartforms} }"
-                    class="sapUiSmallMarginTop sapUiSmallMarginBegin">
-                    <ToolbarSpacer />
-                    <Button
-                        text="Create Revision"
-                        type="Emphasized"
-                        icon="sap-icon://add-document"
-                        press=".onCreateRevision" />
-                </Toolbar>
-
                 <!-- One small table per original-activity smartform (root).
                      Rows = activity lineage; each row carries the smartform
                      that chains (via Z_PreviousChecklist) to this root and
@@ -119,11 +107,21 @@
                     class="sapUiSmallMarginTop">
 
                     <Table
-                        mode="MultiSelect"
-                        headerText="{view>smartformDescription}"
                         items="{view>rows}"
                         class="sapUiResponsiveMargin"
                         width="auto">
+
+                        <headerToolbar>
+                            <Toolbar>
+                                <Title text="{view>smartformDescription}" level="H5" />
+                                <ToolbarSpacer />
+                                <Button
+                                    text="Create Revision"
+                                    type="Emphasized"
+                                    icon="sap-icon://add-document"
+                                    press=".onCreateRevision" />
+                            </Toolbar>
+                        </headerToolbar>
 
                         <columns>
                             <Column width="7rem"><header><Text text="Revision" /></header></Column>

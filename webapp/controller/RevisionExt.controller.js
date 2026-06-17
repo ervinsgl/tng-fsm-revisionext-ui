@@ -2,10 +2,9 @@ sap.ui.define([
     "sap/ui/core/mvc/Controller",
     "sap/ui/model/json/JSONModel",
     "sap/m/MessageBox",
-    "sap/m/MessageToast",
     "com/tng/fsm/revisionext/app/utils/ContextService",
     "com/tng/fsm/revisionext/app/utils/RevisionService"
-], (Controller, JSONModel, MessageBox, MessageToast, ContextService, RevisionService) => {
+], (Controller, JSONModel, MessageBox, ContextService, RevisionService) => {
     "use strict";
 
     return Controller.extend("com.tng.fsm.revisionext.app.controller.RevisionExt", {
@@ -19,7 +18,10 @@ sap.ui.define([
                 revisionsBusy: false,
                 tables: [],
                 activities: [],
-                noSmartforms: false
+                noSmartforms: false,
+                originalServiceCallId: null,
+                originalActivityId: null,
+                originalCode: null
             }), "view");
 
             this._loadContext();
@@ -69,6 +71,9 @@ sap.ui.define([
 
                 oModel.setProperty("/activities", activities);
                 oModel.setProperty("/tables", tables);
+                oModel.setProperty("/originalServiceCallId", result.originalServiceCallId || null);
+                oModel.setProperty("/originalActivityId", result.originalActivityId || null);
+                oModel.setProperty("/originalCode", result.originalCode || null);
                 oModel.setProperty("/noSmartforms", tables.length === 0 && activities.length > 0);
 
                 console.log(`Loaded ${tables.length} smartform table(s), ${activities.length} activity row(s) for ${objectId}`);
@@ -83,40 +88,59 @@ sap.ui.define([
         },
 
         /**
-         * Gather all selected rows across every smartform table and, for now,
-         * show their Smartform Description + Activity Code. If nothing is
-         * selected, prompt the user to select at least one row.
+         * Per-table Create Revision. Reads the pressed button's table context
+         * to get that table's root smartform id, builds the next-revision
+         * payload (SC + activity, same base for every table), and shows the
+         * original smartform UUID + next revision number + payload.
+         *
+         * @param {sap.ui.base.Event} oEvent - button press event
          */
-        onCreateRevision() {
-            const oContainer = this.byId("tablesContainer");
-            const aTables = oContainer ? oContainer.getItems() : [];
+        async onCreateRevision(oEvent) {
+            const oModel = this.getView().getModel("view");
 
-            const aSelected = [];
-            aTables.forEach(oTable => {
-                if (!oTable.getSelectedItems) return; // not a table
-                oTable.getSelectedItems().forEach(oItem => {
-                    const oRow = oItem.getBindingContext("view").getObject();
-                    aSelected.push({
-                        smartformDescription: oRow.smartformDescription || "(no smartform)",
-                        code: oRow.code || "(no code)",
-                        revisionLabel: oRow.revisionLabel || ""
-                    });
-                });
-            });
+            // The pressed button's binding context is the table object.
+            const oCtx = oEvent.getSource().getBindingContext("view");
+            const sRootSmartformId = oCtx ? oCtx.getProperty("rootSmartformId") : null;
+            const oSmartform = oCtx ? {
+                rootSmartformId: oCtx.getProperty("rootSmartformId"),
+                lastSmartformId: oCtx.getProperty("lastSmartformId"),
+                rootPruefberichtNr: oCtx.getProperty("rootPruefberichtNr")
+            } : null;
 
-            if (aSelected.length === 0) {
-                MessageToast.show("Select at least one row to create a revision.");
+            const sServiceCallId = oModel.getProperty("/originalServiceCallId");
+            const sKeepActivityId = oModel.getProperty("/originalActivityId");
+            const sOriginalCode = oModel.getProperty("/originalCode");
+
+            if (!sServiceCallId) {
+                MessageBox.warning("No ServiceCall found for the original activity.");
                 return;
             }
 
-            const sList = aSelected
-                .map(s => `• ${s.revisionLabel} — Code ${s.code} — ${s.smartformDescription}`)
-                .join("\n");
+            oModel.setProperty("/busy", true);
+            try {
+                const result = await RevisionService.getServiceCallTree(sServiceCallId, sKeepActivityId, sOriginalCode, oSmartform);
+                const payload = result.payload || {};
+                const nextRev = result.nextRevisionNumber;
+                const smartformPayload = result.smartformPayload || [];
 
-            MessageBox.information(
-                `Selected ${aSelected.length} row(s) to create a revision for:\n\n${sList}`,
-                { title: "Create Revision" }
-            );
+                const sText =
+                    `Original smartform UUID: ${sRootSmartformId || "(unknown)"}\n` +
+                    `Next revision number: ${nextRev != null ? nextRev : "(unknown)"}\n\n` +
+                    `=== ServiceCall + Activity payload ===\n` +
+                    JSON.stringify(payload, null, 2) +
+                    `\n\n=== Smartform payload ===\n` +
+                    JSON.stringify(smartformPayload, null, 2);
+
+                MessageBox.information(sText, {
+                    title: "Create Revision — New Revision Payload",
+                    contentWidth: "40rem"
+                });
+            } catch (error) {
+                console.error("Failed to build revision payload:", error.message);
+                MessageBox.error("Failed to build the new revision payload: " + error.message);
+            } finally {
+                oModel.setProperty("/busy", false);
+            }
         }
 
     });

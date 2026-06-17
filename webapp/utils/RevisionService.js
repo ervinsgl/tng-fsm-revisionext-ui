@@ -47,6 +47,45 @@ sap.ui.define([], () => {
 
             const data = await response.json();
             return data.data || { activities: [], tables: [] };
+        },
+
+        /**
+         * Build the next-revision payload (SC + activity + smartform) from the
+         * original ServiceCall and the pressed table's smartform.
+         *
+         * @param {string} serviceCallId - original activity's ServiceCall id
+         * @param {string} keepActivityId - original activity id to retain
+         * @param {string} originalCode - original activity code
+         * @param {Object} [smartform] - { rootSmartformId, lastSmartformId, rootPruefberichtNr }
+         * @returns {Promise<{payload: Object, nextRevisionNumber: number, smartformPayload: Array}>}
+         */
+        async getServiceCallTree(serviceCallId, keepActivityId, originalCode, smartform) {
+            if (!serviceCallId) throw new Error("No serviceCallId provided");
+
+            let url = `/api/service-call-tree?serviceCallId=${encodeURIComponent(serviceCallId)}`;
+            if (keepActivityId) {
+                url += `&keepActivityId=${encodeURIComponent(keepActivityId)}`;
+            }
+            if (originalCode) {
+                url += `&originalCode=${encodeURIComponent(originalCode)}`;
+            }
+            if (smartform) {
+                if (smartform.rootSmartformId) {
+                    url += `&rootSmartformId=${encodeURIComponent(smartform.rootSmartformId)}`;
+                }
+                if (smartform.lastSmartformId) {
+                    url += `&lastSmartformId=${encodeURIComponent(smartform.lastSmartformId)}`;
+                }
+                if (smartform.rootPruefberichtNr) {
+                    url += `&rootPruefberichtNr=${encodeURIComponent(smartform.rootPruefberichtNr)}`;
+                }
+            }
+
+            const response = await fetch(url);
+            if (!response.ok) throw new Error(`Service call tree HTTP ${response.status}`);
+
+            const data = await response.json();
+            return data.data || {};
         }
 
     };

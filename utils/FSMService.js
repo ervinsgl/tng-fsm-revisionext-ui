@@ -98,6 +98,339 @@ class FSMService {
     }
 
     /**
+     * Read a UDF value from a composite-tree DTO's udfValues array.
+     * Composite-tree shape differs from the Query API: each entry is
+     * { udfMeta: { externalId }, value } rather than { name, value }.
+     * @param {Object} dto - object carrying udfValues
+     * @param {string} externalId - e.g. 'Z_Activity_Type'
+     * @returns {string|null}
+     * @private
+     */
+    _udfCompositeTree(dto, externalId) {
+        const vals = (dto && dto.udfValues) || [];
+        const hit = vals.find(u => u && u.udfMeta && u.udfMeta.externalId === externalId);
+        return hit && hit.value != null ? hit.value : null;
+    }
+
+    /**
+     * Fetch the full composite-tree of a ServiceCall, then keep only the
+     * activity segment whose id matches keepActivityId (the original activity).
+     * All other activities under the ServiceCall are dropped.
+     *
+     * @param {string} serviceCallId - ServiceCall to fetch (original's object.objectId)
+     * @param {string} [keepActivityId] - Activity id to retain; if omitted, no filter
+     * @returns {Promise<Object>} the composite-tree object with activities filtered
+     * @throws {Error} on request failure
+     */
+    async getServiceCallCompositeTree(serviceCallId, keepActivityId) {
+        const destination = await DestinationService.getDestination(DESTINATION_NAME);
+        const token = await TokenCache.getToken(destination);
+
+        const config = destination.destinationConfiguration;
+        const baseUrl = config.URL;
+        const url = `${baseUrl}/api/fsm-connector/v1/composite-tree/service-calls/${serviceCallId}`;
+
+        const params = {
+            account: config.account || this.config.account,
+            company: config.company || this.config.company
+        };
+
+        const headers = {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+            'X-Account-ID': config['URL.headers.X-Account-ID'],
+            'X-Company-ID': config['URL.headers.X-Company-ID'],
+            'X-Client-ID': config['URL.headers.X-Client-ID'],
+            'X-Client-Version': config['URL.headers.X-Client-Version']
+        };
+
+        try {
+            const response = await axios.get(url, { params, headers });
+            const tree = response.data || {};
+
+            // Keep only the activity segment matching the original activity id.
+            if (keepActivityId && Array.isArray(tree.activities)) {
+                tree.activities = tree.activities.filter(act => act && act.id === keepActivityId);
+            }
+            return tree;
+        } catch (error) {
+            console.error('FSMService: Composite-tree Error:', error.response?.data || error.message);
+            throw error;
+        }
+    }
+
+    /**
+     * Upsert a UDF (by externalId) in a composite-tree udfValues array.
+     * If a UDF with the externalId exists, its value is updated (udfMeta.id
+     * preserved). Otherwise a new entry { udfMeta: { externalId }, value } is
+     * pushed. Mutates and returns the array.
+     * @param {Array} udfValues
+     * @param {string} externalId
+     * @param {string} value
+     * @returns {Array} the (mutated) udfValues
+     * @private
+     */
+    _upsertCompositeUdf(udfValues, externalId, value) {
+        const arr = Array.isArray(udfValues) ? udfValues : [];
+        const existing = arr.find(u => u && u.udfMeta && u.udfMeta.externalId === externalId);
+        if (existing) {
+            existing.value = value; // keep existing udfMeta.id
+        } else {
+            arr.push({ udfMeta: { externalId }, value });
+        }
+        return arr;
+    }
+
+    /**
+     * Transform a fetched ServiceCall composite-tree into the payload for a
+     * NEW revision's ServiceCall header. Mutates the header in place:
+     *   - id -> null
+     *   - code -> `<code>-Rev-<NNN>-<N>` (N = nextRevisionNumber, NNN zero-padded to 3)
+     *   - subject -> `<originalCode> Rev-<N>`
+     *   - remove transient/child fields
+     *   - upsert Z_RevisionOfActivity = originalCode, Z_revisionNumber = N
+     * Activity segment is transformed later (separate step).
+     *
+     * @param {Object} tree - the (activity-filtered) composite tree
+     * @param {string} originalCode - original activity code (e.g. '19846')
+     * @param {number} nextRevisionNumber - last revision number + 1
+     * @returns {Object} the mutated tree
+     * @private
+     */
+    _transformRevisionHeader(tree, originalCode, nextRevisionNumber) {
+        if (!tree || typeof tree !== 'object') return tree;
+
+        const n = nextRevisionNumber;
+        const padded = String(n).padStart(3, '0'); // 4 -> '004', max 999
+
+        tree.id = null;
+        if (tree.code != null) {
+            tree.code = `${tree.code}-Rev-${padded}-${n}`;
+        }
+        tree.subject = `${originalCode} Rev-${n}`;
+
+        // Remove transient / child-collection fields not wanted on the new header.
+        ['lastChanged', 'chargeableEfforts', 'chargeableExpenses',
+         'chargeableMaterials', 'chargeableMileages', 'createPerson',
+         'resolution', 'reservedMaterials', 'attachments', 'requirements',
+         'serviceContract'
+        ].forEach(f => { delete tree[f]; });
+
+        // Upsert the two revision UDFs.
+        tree.udfValues = this._upsertCompositeUdf(tree.udfValues, 'Z_RevisionOfActivity', String(originalCode));
+        tree.udfValues = this._upsertCompositeUdf(tree.udfValues, 'Z_revisionNumber', String(n));
+
+        return tree;
+    }
+
+    /**
+     * Remove UDFs (by externalId) from a composite-tree udfValues array.
+     * Mutates and returns the array.
+     * @param {Array} udfValues
+     * @param {Array<string>} externalIds
+     * @returns {Array}
+     * @private
+     */
+    _removeCompositeUdfs(udfValues, externalIds) {
+        if (!Array.isArray(udfValues)) return udfValues;
+        const drop = new Set(externalIds);
+        return udfValues.filter(u =>
+            !(u && u.udfMeta && drop.has(u.udfMeta.externalId))
+        );
+    }
+
+    /**
+     * Transform the original activity segment into the NEW revision's activity.
+     * Mutates the activity in place:
+     *   - id / code / externalId -> null
+     *   - subject -> `<originalCode> Rev-<N>` + bracketed attribute suffix
+     *   - attachments -> null
+     *   - remove transient/child fields
+     *   - upsert Z_UpdateAttributes='true', Z_Act_RevisionOfActivity=<link>,
+     *     Z_Activity_Type='-7'
+     *   - remove Z_FollowUpRevisions, Z_Act_S4ItemDescription
+     *
+     * @param {Object} act - the activity segment
+     * @param {string} originalActivityId - original activity id (for the link)
+     * @param {string} originalCode - original activity code
+     * @param {number} nextRevisionNumber - last revision number + 1
+     * @param {string} baseUrl - FSM base URL (for the link)
+     * @param {string} companyId - numeric company id (for the link)
+     * @returns {Object} the mutated activity
+     * @private
+     */
+    _transformRevisionActivity(act, originalActivityId, originalCode, nextRevisionNumber, baseUrl, companyId) {
+        if (!act || typeof act !== 'object') return act;
+
+        const n = nextRevisionNumber;
+
+        act.id = null;
+        act.code = null;
+        act.externalId = null;
+
+        // Subject: "<code> Rev-<N>" + the bracketed attribute suffix kept from
+        // the original subject (everything from the first '[' onward).
+        const subjectPrefix = `${originalCode} Rev-${n}`;
+        if (typeof act.subject === 'string') {
+            const bracketIdx = act.subject.indexOf('[');
+            const suffix = bracketIdx >= 0 ? ' ' + act.subject.slice(bracketIdx) : '';
+            act.subject = subjectPrefix + suffix;
+        } else {
+            act.subject = subjectPrefix;
+        }
+
+        act.attachments = null;
+
+        // Remove transient / child-collection fields.
+        ['lastChanged', 'remarks', 'contact', 'reservedMaterials', 'requirements',
+         'region', 'workflowSteps', 'internalRemarks', 'internalRemarks2',
+         'statusChangeReason', 'activityFeedbacks'
+        ].forEach(f => { delete act[f]; });
+
+        // Upsert revision UDFs.
+        const base = (baseUrl || '').replace(/\/+$/, '');
+        const link = `${base}/shell/#/planning-dispatching/activities/view/${originalActivityId}/details?selectedCompanyId=${companyId}`;
+        act.udfValues = this._upsertCompositeUdf(act.udfValues, 'Z_UpdateAttributes', 'true');
+        act.udfValues = this._upsertCompositeUdf(act.udfValues, 'Z_Act_RevisionOfActivity', link);
+        act.udfValues = this._upsertCompositeUdf(act.udfValues, 'Z_Activity_Type', '-7');
+
+        // Remove UDFs only relevant to the original activity.
+        act.udfValues = this._removeCompositeUdfs(act.udfValues, ['Z_FollowUpRevisions', 'Z_Act_S4ItemDescription']);
+
+        return act;
+    }
+
+    /**
+     * Generate a random UUID v4 (lowercase, hyphenated). The 3rd group always
+     * starts with '4' and the 4th group's first char is 8/9/a/b, per RFC 4122.
+     * @returns {string}
+     * @private
+     */
+    _uuidV4() {
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+            const r = Math.random() * 16 | 0;
+            const v = c === 'x' ? r : (r & 0x3 | 0x8);
+            return v.toString(16);
+        });
+    }
+
+    /**
+     * Fetch the full ChecklistInstance DTO for a smartform id. Used to copy
+     * template/language/content/etc. into a new revision's smartform payload.
+     * @param {string} smartformId
+     * @returns {Promise<Object|null>} the raw w object, or null
+     * @private
+     */
+    async _getChecklistInstanceFull(smartformId) {
+        const query = `SELECT w FROM ChecklistInstance w WHERE w.id = '${smartformId}'`;
+        const data = await this.makeQueryRequest(query, 'ChecklistInstance.20');
+        if (!data.data || data.data.length === 0) return null;
+        return data.data[0].w || null;
+    }
+
+    /**
+     * Assemble the new-revision smartform payload (single-element array). Copies
+     * the original (root) smartform's fields, prefixes the description with
+     * "Revision - <N>: ", links Z_PreviousChecklist to the last smartform in the
+     * table (or the original), sets Z_PruefberichtNr from the original, and
+     * attaches a fresh checklistId. object.objectId is a placeholder for the new
+     * activity (filled in once the activity is actually created).
+     *
+     * @param {string} rootSmartformId - original (root) smartform id for the table
+     * @param {string} previousChecklistId - last smartform in the table (Z_PreviousChecklist)
+     * @param {string|null} pruefberichtNr - original smartform's Z_PruefberichtNr
+     * @param {number} nextRevisionNumber - last revision number + 1
+     * @returns {Promise<Array>} single-element smartform payload array
+     * @private
+     */
+    async _buildRevisionSmartformPayload(rootSmartformId, previousChecklistId, pruefberichtNr, nextRevisionNumber) {
+        const root = await this._getChecklistInstanceFull(rootSmartformId);
+        if (!root) return [];
+
+        const n = nextRevisionNumber;
+        const baseDescription = (root.description && root.description.trim()) ? root.description.trim() : '';
+
+        return [{
+            template: root.template || null,
+            description: `Revision - ${n}: ${baseDescription}`,
+            language: root.language || null,
+            mandatory: true,
+            content: root.content || null,
+            inactive: false,
+            createPerson: root.createPerson || null,
+            version: root.version != null ? root.version : null,
+            responsiblePerson: root.responsiblePerson || null,
+            closed: false,
+            udfValues: [
+                { meta: { externalId: 'Z_PreviousChecklist' }, value: previousChecklistId || rootSmartformId },
+                { meta: { externalId: 'Z_PruefberichtNr' }, value: pruefberichtNr != null ? pruefberichtNr : '' }
+            ],
+            checklistId: this._uuidV4(),
+            syncStatus: 'IN_CLOUD',
+            object: {
+                objectId: '<NEW_ACTIVITY_UUID>', // placeholder; set after activity creation
+                objectType: 'ACTIVITY'
+            }
+        }];
+    }
+
+    /**
+     * Build the new-revision ServiceCall payload for the activity in context.
+     * Fetches the original's ServiceCall composite tree, keeps the original
+     * activity segment, and transforms the header for the NEXT revision.
+     *
+     * The next revision number is computed LIVE here (max existing
+     * Z_revisionNumber + 1) so repeated calls increment correctly.
+     *
+     * If smartform inputs are supplied (rootSmartformId etc.), the matching
+     * new-revision smartform payload is assembled and returned too.
+     *
+     * @param {string} originalServiceCallId - original activity's ServiceCall id
+     * @param {string} originalActivityId - original activity id (segment to keep)
+     * @param {string} originalCode - original activity code (e.g. '19846')
+     * @param {Object} [smartform] - { rootSmartformId, lastSmartformId, rootPruefberichtNr }
+     * @returns {Promise<{payload: Object, nextRevisionNumber: number, smartformPayload: Array}>}
+     */
+    async buildNewRevisionPayload(originalServiceCallId, originalActivityId, originalCode, smartform) {
+        // Live next-revision number = current max + 1 (0 if none yet -> first rev = 1).
+        const scNumberMap = await this._getRevisionServiceCalls(originalCode);
+        let maxNum = 0;
+        scNumberMap.forEach(num => { if (num != null && num > maxNum) maxNum = num; });
+        const nextRevisionNumber = maxNum + 1;
+
+        // Link parts (base URL + company id) for the activity's revision link.
+        const destination = await DestinationService.getDestination(DESTINATION_NAME);
+        const dcfg = destination.destinationConfiguration;
+        const baseUrl = dcfg.URL || '';
+        const companyId = dcfg['URL.headers.X-Company-ID'] || '';
+
+        const tree = await this.getServiceCallCompositeTree(originalServiceCallId, originalActivityId);
+
+        // Header transform.
+        this._transformRevisionHeader(tree, originalCode, nextRevisionNumber);
+
+        // Activity transform (the single kept original activity segment).
+        if (Array.isArray(tree.activities)) {
+            tree.activities = tree.activities.map(act =>
+                this._transformRevisionActivity(act, originalActivityId, originalCode, nextRevisionNumber, baseUrl, companyId)
+            );
+        }
+
+        // Smartform payload (per the table whose button was pressed).
+        let smartformPayload = [];
+        if (smartform && smartform.rootSmartformId) {
+            smartformPayload = await this._buildRevisionSmartformPayload(
+                smartform.rootSmartformId,
+                smartform.lastSmartformId,
+                smartform.rootPruefberichtNr,
+                nextRevisionNumber
+            );
+        }
+
+        return { payload: tree, nextRevisionNumber, smartformPayload };
+    }
+
+    /**
      * Fetch the attachment for a specific smartform on a specific activity.
      * Matched by BOTH sourceObject.objectId (smartform) and object.objectId
      * (activity), so each smartform row gets its own activity-specific file.
@@ -148,7 +481,7 @@ class FSMService {
      * @private
      */
     async _getChecklistInstances(objectId) {
-        const query = `SELECT w.id, w.template, w.description, w.udf.Z_PreviousChecklist FROM ChecklistInstance w WHERE w.object.objectId = '${objectId}' AND w.closed = true`;
+        const query = `SELECT w.id, w.template, w.description, w.udf.Z_PreviousChecklist, w.udf.Z_PruefberichtNr FROM ChecklistInstance w WHERE w.object.objectId = '${objectId}' AND w.closed = true`;
         const data = await this.makeQueryRequest(query, 'ChecklistInstance.20');
 
         if (!data.data || data.data.length === 0) return [];
@@ -168,7 +501,9 @@ class FSMService {
                 // Selecting w.udf.Z_PreviousChecklist explicitly makes FSM return
                 // it inside udfValues WITH the `name` field (a bare SELECT w omits
                 // `name`, leaving only meta/value, which cannot be matched).
-                previousChecklist: this._udf(w, 'Z_PreviousChecklist')
+                previousChecklist: this._udf(w, 'Z_PreviousChecklist'),
+                // Z_PruefberichtNr (report number) carried for the smartform payload.
+                pruefberichtNr: this._udf(w, 'Z_PruefberichtNr')
             };
         });
     }
@@ -293,6 +628,7 @@ class FSMService {
                     description: inst.description,
                     rawDescription: inst.rawDescription || '',
                     previousChecklist: inst.previousChecklist || null,
+                    pruefberichtNr: inst.pruefberichtNr || null,
                     name: tmpl.name || null,
                     attachments: []
                 });
@@ -334,13 +670,14 @@ class FSMService {
     /**
      * Activity core fields by Activity id.
      * Used both to classify the context activity (original vs revision) and
-     * to read the original's code/subject.
+     * to read the original's code/subject/serviceCallId.
+     * object.objectId is the activity's parent ServiceCall id.
      * @param {string} activityId
-     * @returns {Promise<{id: string, previousActivity: string|null, code: string|null, subject: string|null}|null>}
+     * @returns {Promise<{id: string, previousActivity: string|null, code: string|null, subject: string|null, serviceCallId: string|null}|null>}
      * @private
      */
     async _getActivityCore(activityId) {
-        const query = `SELECT w.id, w.previousActivity, w.code, w.subject FROM Activity w WHERE w.id = '${activityId}'`;
+        const query = `SELECT w.id, w.previousActivity, w.code, w.subject, w.object.objectId FROM Activity w WHERE w.id = '${activityId}'`;
         const data = await this.makeQueryRequest(query, 'Activity.43');
 
         if (!data.data || data.data.length === 0) return null;
@@ -349,7 +686,9 @@ class FSMService {
             id: w.id || activityId,
             previousActivity: w.previousActivity || null,
             code: w.code != null ? w.code : null,
-            subject: w.subject != null ? w.subject : null
+            subject: w.subject != null ? w.subject : null,
+            // CoreSQL returns the dotted alias as a flat key on w.
+            serviceCallId: w['object.objectId'] || (w.object ? w.object.objectId : null) || null
         };
     }
 
@@ -421,16 +760,16 @@ class FSMService {
             const ctx = await this._getActivityCore(contextActivityId);
             if (!ctx) return [];
 
-            // 2) Resolve the original activity (id + code + subject).
+            // 2) Resolve the original activity (id + code + subject + serviceCallId).
             let original;
             if (!ctx.previousActivity) {
                 // Context IS the original.
-                original = { id: ctx.id, code: ctx.code, subject: ctx.subject };
+                original = { id: ctx.id, code: ctx.code, subject: ctx.subject, serviceCallId: ctx.serviceCallId };
             } else {
                 // Context is a revision; previousActivity is the original's id.
                 const orig = await this._getActivityCore(ctx.previousActivity);
                 if (!orig) return [];
-                original = { id: orig.id, code: orig.code, subject: orig.subject };
+                original = { id: orig.id, code: orig.code, subject: orig.subject, serviceCallId: orig.serviceCallId };
             }
 
             // 3) Revision ServiceCalls (id -> revision number) by original code.
@@ -465,7 +804,8 @@ class FSMService {
                 revisionLabel: 'Original',
                 id: original.id,
                 code: original.code,
-                subject: original.subject
+                subject: original.subject,
+                serviceCallId: original.serviceCallId
             };
 
             return [originalRow, ...revisions];
@@ -538,6 +878,14 @@ class FSMService {
                 subject: a.subject != null ? a.subject : ''
             }));
 
+            // Original activity's ServiceCall id + activity id, for the Create
+            // Revision composite-tree fetch (we GET the original's ServiceCall
+            // and keep only the activity segment matching the original).
+            const originalEntry = tree.find(a => a.isOriginal) || {};
+            const originalServiceCallId = originalEntry.serviceCallId || null;
+            const originalActivityId = originalEntry.id || null;
+            const originalCode = originalEntry.code || null;
+
             // 1) Fetch Inspection smartforms for every activity, tag with activityId.
             const perActivity = await Promise.all(
                 activities.map(async act => {
@@ -553,7 +901,6 @@ class FSMService {
 
             // 3) Tables are defined by root smartforms (previousChecklist === own id),
             //    ordered as they appear on the ORIGINAL activity.
-            const originalActivityId = (activities.find(a => a.isOriginal) || {}).id;
             const roots = allSmartforms.filter(sf =>
                 sf.activityId === originalActivityId &&
                 (!sf.previousChecklist || sf.previousChecklist === sf.id)
@@ -585,6 +932,7 @@ class FSMService {
                     rootSmartformId: root.id,
                     smartformName: root.name || '',
                     smartformDescription: root.rawDescription || root.description || '',
+                    rootPruefberichtNr: root.pruefberichtNr || null,
                     rows: rows,
                     _rowByActivityId: rowByActivityId
                 };
@@ -609,6 +957,20 @@ class FSMService {
                 }
             });
 
+            // Per table: the LAST populated smartform row (highest revision with
+            // a smartform). Rows are ordered Original -> Rev-1 -> ...; walk from
+            // the end. Falls back to the root smartform if only it is populated.
+            tables.forEach(t => {
+                let lastId = t.rootSmartformId;
+                for (let i = t.rows.length - 1; i >= 0; i--) {
+                    if (t.rows[i].hasSmartform && t.rows[i].smartformId) {
+                        lastId = t.rows[i].smartformId;
+                        break;
+                    }
+                }
+                t.lastSmartformId = lastId;
+            });
+
             // 5) Fetch attachments for every populated row (smartform + activity)
             //    and fill the attachment columns. Empty rows are skipped.
             const populatedRows = [];
@@ -631,7 +993,7 @@ class FSMService {
             // Drop internal helper map before returning.
             tables.forEach(t => { delete t._rowByActivityId; });
 
-            return { activities, tables };
+            return { activities, tables, originalServiceCallId, originalActivityId, originalCode };
         } catch (error) {
             console.error('FSMService: Error building tree with smartforms:', error.message);
             return { activities: [], tables: [] };

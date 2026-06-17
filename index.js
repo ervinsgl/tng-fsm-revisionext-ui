@@ -181,6 +181,39 @@ app.get('/api/activity-revisions', async (req, res) => {
     }
 });
 
+/**
+ * GET /api/service-call-tree
+ *   ?serviceCallId=<id>&keepActivityId=<id>&originalCode=<code>
+ *   &rootSmartformId=<id>&lastSmartformId=<id>&rootPruefberichtNr=<val>
+ *
+ * Builds the next-revision payload: transformed ServiceCall header + activity,
+ * plus the new-revision smartform payload for the table whose button was
+ * pressed. The next revision number is computed live (max + 1).
+ */
+app.get('/api/service-call-tree', async (req, res) => {
+    const serviceCallId = req.query.serviceCallId;
+    const keepActivityId = req.query.keepActivityId;
+    const originalCode = req.query.originalCode;
+
+    const smartform = {
+        rootSmartformId: req.query.rootSmartformId,
+        lastSmartformId: req.query.lastSmartformId,
+        rootPruefberichtNr: req.query.rootPruefberichtNr
+    };
+
+    if (!serviceCallId) {
+        return res.status(400).json({ message: 'Missing serviceCallId query parameter.' });
+    }
+
+    try {
+        const tree = await FSMService.buildNewRevisionPayload(serviceCallId, keepActivityId, originalCode, smartform);
+        return res.json({ data: tree });
+    } catch (error) {
+        console.error('service-call-tree route error:', error.message);
+        return res.status(502).json({ message: 'Failed to build new revision payload from FSM.' });
+    }
+});
+
 // ===========================
 // STATIC FILES (UI5 frontend)
 // ===========================
