@@ -95,43 +95,109 @@
 
                 </Panel>
 
-                <!-- Activity revision tree: original first, then revisions -->
-                <Table
-                    id="revisionsTable"
-                    headerText="Revisionen"
+                <!-- Create Revision action (acts across all smartform tables) -->
+                <Toolbar
+                    visible="{= !${view>/noSmartforms} }"
+                    class="sapUiSmallMarginTop sapUiSmallMarginBegin">
+                    <ToolbarSpacer />
+                    <Button
+                        text="Create Revision"
+                        type="Emphasized"
+                        icon="sap-icon://add-document"
+                        press=".onCreateRevision" />
+                </Toolbar>
+
+                <!-- One small table per original-activity smartform (root).
+                     Rows = activity lineage; each row carries the smartform
+                     that chains (via Z_PreviousChecklist) to this root and
+                     belongs to that activity. -->
+                <VBox
+                    id="tablesContainer"
                     busy="{view>/revisionsBusy}"
                     busyIndicatorDelay="0"
-                    items="{view>/revisionRows}"
-                    growing="true"
-                    growingThreshold="50"
-                    class="sapUiResponsiveMargin"
-                    width="auto"
-                    noDataText="No activity revisions found.">
+                    items="{view>/tables}"
+                    class="sapUiSmallMarginTop">
 
-                    <columns>
-                        <Column width="9rem"><header><Text text="Revision" /></header></Column>
-                        <Column width="7rem"><header><Text text="Code" /></header></Column>
-                        <Column><header><Text text="Activity ID" /></header></Column>
-                        <Column><header><Text text="Subject" /></header></Column>
-                    </columns>
+                    <Table
+                        mode="MultiSelect"
+                        headerText="{view>smartformDescription}"
+                        items="{view>rows}"
+                        class="sapUiResponsiveMargin"
+                        width="auto">
 
-                    <items>
-                        <ColumnListItem
-                            highlight="{= ${view>isOriginal} ? 'Information' : 'None' }">
-                            <cells>
-                                <ObjectStatus
-                                    text="{view>revisionLabel}"
-                                    state="{= ${view>isOriginal} ? 'Information' : 'None' }"
-                                    icon="{= ${view>isOriginal} ? 'sap-icon://home' : 'sap-icon://history' }"
-                                    inverted="{view>isOriginal}" />
-                                <Text text="{view>code}" />
-                                <Text text="{view>id}" />
-                                <Text text="{view>subject}" />
-                            </cells>
-                        </ColumnListItem>
-                    </items>
+                        <columns>
+                            <Column width="7rem"><header><Text text="Revision" /></header></Column>
+                            <Column width="6rem"><header><Text text="Code" /></header></Column>
+                            <Column><header><Text text="Activity ID" /></header></Column>
+                            <Column><header><Text text="Subject" /></header></Column>
+                            <Column><header><Text text="Smartform Description" /></header></Column>
+                            <Column><header><Text text="Smartform Name" /></header></Column>
+                            <Column><header><Text text="Attachment Description" /></header></Column>
+                            <Column><header><Text text="Attachment Name" /></header></Column>
+                            <Column><header><Text text="Revision/Report Name" /></header></Column>
+                        </columns>
 
-                </Table>
+                        <items>
+                            <ColumnListItem
+                                highlight="{= ${view>isOriginal} ? 'Information' : 'None' }">
+                                <cells>
+                                    <ObjectStatus
+                                        text="{view>revisionLabel}"
+                                        state="{= ${view>isOriginal} ? 'Information' : 'None' }"
+                                        inverted="{view>isOriginal}" />
+                                    <Text text="{view>code}" />
+                                    <Text text="{view>id}" />
+                                    <Text text="{view>subject}" />
+                                    <Text text="{view>smartformDescription}" />
+                                    <Text text="{view>smartformName}" />
+                                    <Text text="{view>attachmentDescription}" />
+                                    <Text text="{view>attachmentName}" />
+                                    <Text text="{view>revisionName}" />
+                                </cells>
+                            </ColumnListItem>
+                        </items>
+
+                    </Table>
+
+                </VBox>
+
+                <!-- No smartforms: show activity lineage only + message -->
+                <VBox
+                    visible="{view>/noSmartforms}"
+                    class="sapUiResponsiveMargin">
+
+                    <MessageStrip
+                        text="No smartforms created for the original activity."
+                        type="Information"
+                        showIcon="true"
+                        class="sapUiSmallMarginBottom" />
+
+                    <Table
+                        items="{view>/activities}"
+                        width="auto">
+                        <columns>
+                            <Column width="7rem"><header><Text text="Revision" /></header></Column>
+                            <Column width="6rem"><header><Text text="Code" /></header></Column>
+                            <Column><header><Text text="Activity ID" /></header></Column>
+                            <Column><header><Text text="Subject" /></header></Column>
+                        </columns>
+                        <items>
+                            <ColumnListItem
+                                highlight="{= ${view>isOriginal} ? 'Information' : 'None' }">
+                                <cells>
+                                    <ObjectStatus
+                                        text="{view>revisionLabel}"
+                                        state="{= ${view>isOriginal} ? 'Information' : 'None' }"
+                                        inverted="{view>isOriginal}" />
+                                    <Text text="{view>code}" />
+                                    <Text text="{view>id}" />
+                                    <Text text="{view>subject}" />
+                                </cells>
+                            </ColumnListItem>
+                        </items>
+                    </Table>
+
+                </VBox>
 
             </layout:VerticalLayout>
 

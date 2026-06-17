@@ -98,6 +98,32 @@ class FSMService {
     }
 
     /**
+     * Fetch the attachment for a specific smartform on a specific activity.
+     * Matched by BOTH sourceObject.objectId (smartform) and object.objectId
+     * (activity), so each smartform row gets its own activity-specific file.
+     * Returns the first attachment found, or null if none.
+     *
+     * @param {string} smartformId - ChecklistInstance id (sourceObject.objectId)
+     * @param {string} activityId  - Activity id (object.objectId)
+     * @returns {Promise<{fileName: string, description: string}|null>}
+     * @private
+     */
+    async _getAttachmentForSmartform(smartformId, activityId) {
+        if (!smartformId || !activityId) return null;
+
+        const query = `SELECT w.udf.Z_Attachment_Description, w.fileName FROM Attachment w WHERE w.sourceObject.objectId = '${smartformId}' AND w.object.objectId = '${activityId}'`;
+        const data = await this.makeQueryRequest(query, 'Attachment.19');
+
+        if (!data.data || data.data.length === 0) return null;
+
+        const w = data.data[0].w;
+        return {
+            fileName: w.fileName || '',
+            description: this._udf(w, 'Z_Attachment_Description') || ''
+        };
+    }
+
+    /**
      * Build a CoreSQL IN-list literal from an array of UUIDs.
      * Deduplicates and quotes each value: ['a','b'] -> "'a','b'".
      * @param {Array<string>} ids
@@ -122,7 +148,7 @@ class FSMService {
      * @private
      */
     async _getChecklistInstances(objectId) {
-        const query = `SELECT w FROM ChecklistInstance w WHERE w.object.objectId = '${objectId}' AND w.closed = true`;
+        const query = `SELECT w.id, w.template, w.description, w.udf.Z_PreviousChecklist FROM ChecklistInstance w WHERE w.object.objectId = '${objectId}' AND w.closed = true`;
         const data = await this.makeQueryRequest(query, 'ChecklistInstance.20');
 
         if (!data.data || data.data.length === 0) return [];
@@ -134,7 +160,15 @@ class FSMService {
                 id: w.id,
                 // Smartform Description: real description, else fall back to the ID.
                 description: desc ? `${desc} (${w.id})` : w.id,
-                template: w.template || null
+                // Clean description (no ID concat) for table cells.
+                rawDescription: desc || '',
+                template: w.template || null,
+                // Z_PreviousChecklist links a smartform to its predecessor;
+                // when it equals own id, the smartform is an original (root).
+                // Selecting w.udf.Z_PreviousChecklist explicitly makes FSM return
+                // it inside udfValues WITH the `name` field (a bare SELECT w omits
+                // `name`, leaving only meta/value, which cannot be matched).
+                previousChecklist: this._udf(w, 'Z_PreviousChecklist')
             };
         });
     }
@@ -257,6 +291,8 @@ class FSMService {
                 result.push({
                     id: inst.id,
                     description: inst.description,
+                    rawDescription: inst.rawDescription || '',
+                    previousChecklist: inst.previousChecklist || null,
                     name: tmpl.name || null,
                     attachments: []
                 });
@@ -436,6 +472,169 @@ class FSMService {
         } catch (error) {
             console.error('FSMService: Error building activity revision tree:', error.message);
             return [];
+        }
+    }
+
+    /**
+     * Resolve a smartform's root (original) id by following the
+     * Z_PreviousChecklist chain until a self-reference is found.
+     * A smartform whose previousChecklist === own id is itself a root.
+     * Guards against missing links and cycles.
+     *
+     * @param {string} smartformId
+     * @param {Map<string, Object>} byId - id -> smartform { id, previousChecklist }
+     * @returns {string|null} root smartform id, or null if unresolvable
+     * @private
+     */
+    _resolveRootChecklistId(smartformId, byId) {
+        let currentId = smartformId;
+        const seen = new Set();
+
+        while (currentId && !seen.has(currentId)) {
+            seen.add(currentId);
+            const sf = byId.get(currentId);
+            if (!sf) return null; // predecessor not among fetched smartforms
+            const prev = sf.previousChecklist;
+            if (!prev || prev === currentId) {
+                return currentId; // self-reference (or no link) => this is the root
+            }
+            currentId = prev;
+        }
+        return null; // cycle or dead end
+    }
+
+    /**
+     * Build the per-smartform table structure across the whole activity tree.
+     *
+     * Fetches Inspection smartforms for EVERY activity (original + revisions),
+     * then groups them into tables by their root (original) smartform, using
+     * the Z_PreviousChecklist chain. Within each table, every smartform sits
+     * on the row of the activity it belongs to.
+     *
+     * Row shape (per table):
+     *   revisionLabel, code, id, subject        - activity columns
+     *   smartformDescription, smartformName     - populated where a smartform
+     *                                             exists for that activity
+     *   attachmentDescription, attachmentName,
+     *   revisionName                            - empty for now
+     *   isOriginal, hasSmartform                - flags
+     *
+     * @param {string} contextActivityId - Activity id from the FSM context
+     * @returns {Promise<{activities: Array<Object>, tables: Array<Object>}>}
+     */
+    async getActivityTreeWithSmartforms(contextActivityId) {
+        try {
+            const tree = await this.getActivityRevisionTree(contextActivityId);
+            if (!tree || tree.length === 0) {
+                return { activities: [], tables: [] };
+            }
+
+            // Shared activity lineage (already ordered: original, then revisions).
+            const activities = tree.map(a => ({
+                isOriginal: !!a.isOriginal,
+                revisionLabel: a.revisionLabel,
+                code: a.code != null ? a.code : '',
+                id: a.id,
+                subject: a.subject != null ? a.subject : ''
+            }));
+
+            // 1) Fetch Inspection smartforms for every activity, tag with activityId.
+            const perActivity = await Promise.all(
+                activities.map(async act => {
+                    const sfs = await this.getInspectionSmartformsForActivity(act.id);
+                    return (sfs || []).map(sf => ({ ...sf, activityId: act.id }));
+                })
+            );
+            const allSmartforms = perActivity.flat();
+
+            // 2) Index by id for chain resolution.
+            const byId = new Map();
+            allSmartforms.forEach(sf => byId.set(sf.id, sf));
+
+            // 3) Tables are defined by root smartforms (previousChecklist === own id),
+            //    ordered as they appear on the ORIGINAL activity.
+            const originalActivityId = (activities.find(a => a.isOriginal) || {}).id;
+            const roots = allSmartforms.filter(sf =>
+                sf.activityId === originalActivityId &&
+                (!sf.previousChecklist || sf.previousChecklist === sf.id)
+            );
+
+            // Build a table skeleton per root: one row per activity.
+            const tableByRootId = new Map();
+            const tables = roots.map(root => {
+                const rowByActivityId = new Map();
+                const rows = activities.map(act => {
+                    const row = {
+                        isOriginal: act.isOriginal,
+                        revisionLabel: act.revisionLabel,
+                        code: act.code,
+                        id: act.id,
+                        subject: act.subject,
+                        smartformId: '',
+                        smartformDescription: '',
+                        smartformName: '',
+                        attachmentDescription: '',
+                        attachmentName: '',
+                        revisionName: '',
+                        hasSmartform: false
+                    };
+                    rowByActivityId.set(act.id, row);
+                    return row;
+                });
+                const table = {
+                    rootSmartformId: root.id,
+                    smartformName: root.name || '',
+                    smartformDescription: root.rawDescription || root.description || '',
+                    rows: rows,
+                    _rowByActivityId: rowByActivityId
+                };
+                tableByRootId.set(root.id, table);
+                return table;
+            });
+
+            // 4) Place every smartform into its root's table, on its activity row.
+            allSmartforms.forEach(sf => {
+                const rootId = this._resolveRootChecklistId(sf.id, byId);
+                if (!rootId) return;
+                const table = tableByRootId.get(rootId);
+                if (!table) return; // root not among original-activity roots
+                const row = table._rowByActivityId.get(sf.activityId);
+                if (!row) return; // smartform's activity not in this lineage
+                // First smartform per activity row wins (shouldn't collide normally).
+                if (!row.hasSmartform) {
+                    row.smartformId = sf.id;
+                    row.smartformDescription = sf.rawDescription || sf.description || '';
+                    row.smartformName = sf.name || '';
+                    row.hasSmartform = true;
+                }
+            });
+
+            // 5) Fetch attachments for every populated row (smartform + activity)
+            //    and fill the attachment columns. Empty rows are skipped.
+            const populatedRows = [];
+            tables.forEach(t => {
+                t.rows.forEach(row => {
+                    if (row.hasSmartform && row.smartformId) {
+                        populatedRows.push(row);
+                    }
+                });
+            });
+
+            await Promise.all(populatedRows.map(async row => {
+                const att = await this._getAttachmentForSmartform(row.smartformId, row.id);
+                if (att) {
+                    row.attachmentName = att.fileName || '';
+                    row.attachmentDescription = att.description || '';
+                }
+            }));
+
+            // Drop internal helper map before returning.
+            tables.forEach(t => { delete t._rowByActivityId; });
+
+            return { activities, tables };
+        } catch (error) {
+            console.error('FSMService: Error building tree with smartforms:', error.message);
+            return { activities: [], tables: [] };
         }
     }
 }

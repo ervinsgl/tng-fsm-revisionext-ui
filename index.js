@@ -157,9 +157,11 @@ app.get('/api/checklist-instances', async (req, res) => {
 /**
  * GET /api/activity-revisions?objectId=<activityId>
  *
- * Returns the activity revision tree for the given Activity: the original
- * activity first, then its revisions ordered by revision number ascending.
- * Each row: { isOriginal, revisionLabel, revisionNumber, id, code, subject }.
+ * Returns the activity revision tree (original first, then revisions by
+ * revision number) with Inspection smartforms attached to the original
+ * activity. Each row:
+ *   { isOriginal, revisionLabel, revisionNumber, id, code, subject,
+ *     smartforms: [{ id, description, name }] }
  *
  * objectId is the cloudId (Activity UUID) resolved from the FSM context.
  */
@@ -171,7 +173,7 @@ app.get('/api/activity-revisions', async (req, res) => {
     }
 
     try {
-        const tree = await FSMService.getActivityRevisionTree(objectId);
+        const tree = await FSMService.getActivityTreeWithSmartforms(objectId);
         return res.json({ data: tree });
     } catch (error) {
         console.error('activity-revisions route error:', error.message);

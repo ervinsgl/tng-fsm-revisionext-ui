@@ -6,8 +6,6 @@
  * concerns out of controllers and out of ContextService (which only resolves
  * FSM context).
  *
- * As Phase A grows, revision-smartform / attachment fetches live here too.
- *
  * @file webapp/utils/RevisionService.js
  * @module com.tng.fsm.revisionext.app.utils.RevisionService
  */
@@ -18,11 +16,8 @@ sap.ui.define([], () => {
 
         /**
          * Fetch closed ChecklistInstances (smartforms) for an Activity.
-         * Source-agnostic: both context sources resolve the Activity UUID
-         * into context.cloudId, which is passed here as objectId.
-         *
          * @param {string} objectId - Activity UUID (context.cloudId)
-         * @returns {Promise<Array<{id: string, description: string}>>}
+         * @returns {Promise<Array<{id: string, description: string, name: string}>>}
          */
         async getChecklistInstances(objectId) {
             if (!objectId) return [];
@@ -36,21 +31,22 @@ sap.ui.define([], () => {
         },
 
         /**
-         * Fetch the activity revision tree for an Activity: original first,
-         * then revisions ordered by revision number ascending.
+         * Fetch the activity revision tree reshaped into per-smartform tables.
+         * Returns { activities, tables } where each table has activity-lineage
+         * rows with smartform data on the original row.
          *
          * @param {string} objectId - Activity UUID (context.cloudId)
-         * @returns {Promise<Array<{isOriginal: boolean, revisionLabel: string, revisionNumber: number|null, id: string, code: string|null, subject: string|null}>>}
+         * @returns {Promise<{activities: Array<Object>, tables: Array<Object>}>}
          */
         async getActivityRevisions(objectId) {
-            if (!objectId) return [];
+            if (!objectId) return { activities: [], tables: [] };
 
             const url = `/api/activity-revisions?objectId=${encodeURIComponent(objectId)}`;
             const response = await fetch(url);
             if (!response.ok) throw new Error(`Activity revisions HTTP ${response.status}`);
 
             const data = await response.json();
-            return data.data || [];
+            return data.data || { activities: [], tables: [] };
         }
 
     };
