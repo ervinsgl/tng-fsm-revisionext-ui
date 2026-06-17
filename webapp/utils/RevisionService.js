@@ -79,6 +79,9 @@ sap.ui.define([], () => {
                 if (smartform.rootPruefberichtNr) {
                     url += `&rootPruefberichtNr=${encodeURIComponent(smartform.rootPruefberichtNr)}`;
                 }
+                if (smartform.nextRevisionNumber != null) {
+                    url += `&nextRevisionNumber=${encodeURIComponent(smartform.nextRevisionNumber)}`;
+                }
             }
 
             const response = await fetch(url);

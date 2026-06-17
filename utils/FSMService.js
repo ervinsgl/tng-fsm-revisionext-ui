@@ -194,20 +194,26 @@ class FSMService {
      * @param {Object} tree - the (activity-filtered) composite tree
      * @param {string} originalCode - original activity code (e.g. '19846')
      * @param {number} nextRevisionNumber - last revision number + 1
+     * @param {string|null} existingServiceCallId - id of the revision SC if it
+     *        already exists (PATCH appends to it); null to create a new SC.
      * @returns {Object} the mutated tree
      * @private
      */
-    _transformRevisionHeader(tree, originalCode, nextRevisionNumber) {
+    _transformRevisionHeader(tree, originalCode, nextRevisionNumber, existingServiceCallId) {
         if (!tree || typeof tree !== 'object') return tree;
 
         const n = nextRevisionNumber;
         const padded = String(n).padStart(3, '0'); // 4 -> '004', max 999
 
-        tree.id = null;
+        // id: existing SC id (append) or null (create). PATCH composite-tree
+        // with X-Create-Or-Update branches on this.
+        tree.id = existingServiceCallId || null;
         if (tree.code != null) {
             tree.code = `${tree.code}-Rev-${padded}-${n}`;
         }
         tree.subject = `${originalCode} Rev-${n}`;
+        // externalId belongs to the original SC; the revision SC must not carry it.
+        delete tree.externalId;
 
         // Remove transient / child-collection fields not wanted on the new header.
         ['lastChanged', 'chargeableEfforts', 'chargeableExpenses',
@@ -267,6 +273,10 @@ class FSMService {
         act.id = null;
         act.code = null;
         act.externalId = null;
+
+        // Link the new activity to the original so the read pipeline finds it
+        // as a revision (_getRevisionActivities filters on previousActivity).
+        act.previousActivity = originalActivityId;
 
         // Subject: "<code> Rev-<N>" + the bracketed attribute suffix kept from
         // the original subject (everything from the first '[' onward).
@@ -388,15 +398,24 @@ class FSMService {
      * @param {string} originalServiceCallId - original activity's ServiceCall id
      * @param {string} originalActivityId - original activity id (segment to keep)
      * @param {string} originalCode - original activity code (e.g. '19846')
-     * @param {Object} [smartform] - { rootSmartformId, lastSmartformId, rootPruefberichtNr }
+     * @param {Object} [smartform] - { rootSmartformId, lastSmartformId, rootPruefberichtNr, nextRevisionNumber }
      * @returns {Promise<{payload: Object, nextRevisionNumber: number, smartformPayload: Array}>}
      */
     async buildNewRevisionPayload(originalServiceCallId, originalActivityId, originalCode, smartform) {
-        // Live next-revision number = current max + 1 (0 if none yet -> first rev = 1).
-        const scNumberMap = await this._getRevisionServiceCalls(originalCode);
-        let maxNum = 0;
-        scNumberMap.forEach(num => { if (num != null && num > maxNum) maxNum = num; });
-        const nextRevisionNumber = maxNum + 1;
+        // Per-table next revision number = (revision rows in this table) + 1,
+        // computed during table building and passed in here. Counting is
+        // per smartform lineage, not global to the original activity.
+        let nextRevisionNumber = (smartform && smartform.nextRevisionNumber != null)
+            ? parseInt(smartform.nextRevisionNumber, 10)
+            : null;
+
+        // Fallback (no per-table value supplied): global max + 1.
+        if (nextRevisionNumber == null || isNaN(nextRevisionNumber)) {
+            const scNumberMap = await this._getRevisionServiceCalls(originalCode);
+            let maxNum = 0;
+            scNumberMap.forEach(num => { if (num != null && num > maxNum) maxNum = num; });
+            nextRevisionNumber = maxNum + 1;
+        }
 
         // Link parts (base URL + company id) for the activity's revision link.
         const destination = await DestinationService.getDestination(DESTINATION_NAME);
@@ -406,8 +425,17 @@ class FSMService {
 
         const tree = await this.getServiceCallCompositeTree(originalServiceCallId, originalActivityId);
 
-        // Header transform.
-        this._transformRevisionHeader(tree, originalCode, nextRevisionNumber);
+        // Revision ServiceCall code is the ORIGINAL ServiceCall's code (tree.code,
+        // e.g. '8200002124') + suffix — NOT the activity code (originalCode, e.g.
+        // '19846'). Check if that SC already exists: if so PATCH appends to it
+        // (keep its id); otherwise a new SC is created (id null).
+        const padded = String(nextRevisionNumber).padStart(3, '0');
+        const baseScCode = tree.code != null ? tree.code : originalCode;
+        const revisionCode = `${baseScCode}-Rev-${padded}-${nextRevisionNumber}`;
+        const existingServiceCallId = await this._getServiceCallIdByCode(revisionCode);
+
+        // Header transform (id = existing SC id or null).
+        this._transformRevisionHeader(tree, originalCode, nextRevisionNumber, existingServiceCallId);
 
         // Activity transform (the single kept original activity segment).
         if (Array.isArray(tree.activities)) {
@@ -427,7 +455,13 @@ class FSMService {
             );
         }
 
-        return { payload: tree, nextRevisionNumber, smartformPayload };
+        return {
+            payload: tree,
+            nextRevisionNumber,
+            smartformPayload,
+            serviceCallExists: !!existingServiceCallId,
+            revisionCode
+        };
     }
 
     /**
@@ -693,6 +727,22 @@ class FSMService {
     }
 
     /**
+     * Look up a ServiceCall id by its code. Used to decide whether a revision
+     * ServiceCall already exists (append) or must be created.
+     * @param {string} code - e.g. '8200002124-Rev-002-2'
+     * @returns {Promise<string|null>} existing SC id, or null if none
+     * @private
+     */
+    async _getServiceCallIdByCode(code) {
+        if (!code) return null;
+        const query = `SELECT w.id FROM ServiceCall w WHERE w.code = '${code}'`;
+        const data = await this.makeQueryRequest(query, 'ServiceCall.27');
+        if (!data.data || data.data.length === 0) return null;
+        const w = data.data[0].w;
+        return (w && w.id) ? w.id : null;
+    }
+
+    /**
      * Revision ServiceCalls for an original activity code.
      * Maps ServiceCall id -> revision number via the Z_revisionNumber UDF.
      * @param {string} originalCode - the original activity's code (e.g. '19846')
@@ -899,67 +949,81 @@ class FSMService {
             const byId = new Map();
             allSmartforms.forEach(sf => byId.set(sf.id, sf));
 
-            // 3) Tables are defined by root smartforms (previousChecklist === own id),
-            //    ordered as they appear on the ORIGINAL activity.
+            // 3) Group every smartform under its resolved root (via the
+            //    Z_PreviousChecklist chain). Each smartform belongs to exactly
+            //    one root's bucket.
+            const smartformsByRoot = new Map(); // rootId -> [smartform, ...]
+            allSmartforms.forEach(sf => {
+                const rootId = this._resolveRootChecklistId(sf.id, byId);
+                if (!rootId) return;
+                if (!smartformsByRoot.has(rootId)) smartformsByRoot.set(rootId, []);
+                smartformsByRoot.get(rootId).push(sf);
+            });
+
+            // Roots = smartforms on the ORIGINAL activity that are their own
+            // root (previousChecklist self/null). One table per root.
             const roots = allSmartforms.filter(sf =>
                 sf.activityId === originalActivityId &&
                 (!sf.previousChecklist || sf.previousChecklist === sf.id)
             );
 
-            // Build a table skeleton per root: one row per activity.
-            const tableByRootId = new Map();
+            // Activity lookup (lineage order preserved) for row construction.
+            const activityById = new Map();
+            activities.forEach(act => activityById.set(act.id, act));
+
+            // 4) Build one table per root. Rows are ONLY the activities whose
+            //    smartforms belong to this root's chain (per-chain), with the
+            //    original activity always present. Built in lineage order.
             const tables = roots.map(root => {
-                const rowByActivityId = new Map();
-                const rows = activities.map(act => {
-                    const row = {
-                        isOriginal: act.isOriginal,
-                        revisionLabel: act.revisionLabel,
-                        code: act.code,
-                        id: act.id,
-                        subject: act.subject,
-                        smartformId: '',
-                        smartformDescription: '',
-                        smartformName: '',
-                        attachmentDescription: '',
-                        attachmentName: '',
-                        revisionName: '',
-                        hasSmartform: false
-                    };
-                    rowByActivityId.set(act.id, row);
-                    return row;
+                const bucket = smartformsByRoot.get(root.id) || [];
+
+                // The activity ids this table covers: every activity carrying a
+                // smartform in this root's chain, plus the original activity.
+                const sfByActivityId = new Map(); // activityId -> smartform (first wins)
+                bucket.forEach(sf => {
+                    if (!sfByActivityId.has(sf.activityId)) {
+                        sfByActivityId.set(sf.activityId, sf);
+                    }
                 });
-                const table = {
+                const coveredActivityIds = new Set(sfByActivityId.keys());
+                coveredActivityIds.add(originalActivityId); // original row always shown
+
+                // Rows in lineage order, restricted to covered activities.
+                const rows = activities
+                    .filter(act => coveredActivityIds.has(act.id))
+                    .map(act => {
+                        const sf = sfByActivityId.get(act.id) || null;
+                        return {
+                            isOriginal: act.isOriginal,
+                            revisionLabel: act.revisionLabel,
+                            code: act.code,
+                            id: act.id,
+                            subject: act.subject,
+                            smartformId: sf ? sf.id : '',
+                            smartformDescription: sf ? (sf.rawDescription || sf.description || '') : '',
+                            smartformName: sf ? (sf.name || '') : '',
+                            attachmentDescription: '',
+                            attachmentName: '',
+                            revisionName: '',
+                            hasSmartform: !!sf
+                        };
+                    });
+
+                return {
                     rootSmartformId: root.id,
                     smartformName: root.name || '',
                     smartformDescription: root.rawDescription || root.description || '',
                     rootPruefberichtNr: root.pruefberichtNr || null,
-                    rows: rows,
-                    _rowByActivityId: rowByActivityId
+                    rows: rows
                 };
-                tableByRootId.set(root.id, table);
-                return table;
-            });
-
-            // 4) Place every smartform into its root's table, on its activity row.
-            allSmartforms.forEach(sf => {
-                const rootId = this._resolveRootChecklistId(sf.id, byId);
-                if (!rootId) return;
-                const table = tableByRootId.get(rootId);
-                if (!table) return; // root not among original-activity roots
-                const row = table._rowByActivityId.get(sf.activityId);
-                if (!row) return; // smartform's activity not in this lineage
-                // First smartform per activity row wins (shouldn't collide normally).
-                if (!row.hasSmartform) {
-                    row.smartformId = sf.id;
-                    row.smartformDescription = sf.rawDescription || sf.description || '';
-                    row.smartformName = sf.name || '';
-                    row.hasSmartform = true;
-                }
             });
 
             // Per table: the LAST populated smartform row (highest revision with
             // a smartform). Rows are ordered Original -> Rev-1 -> ...; walk from
             // the end. Falls back to the root smartform if only it is populated.
+            // Also compute this table's next revision number = (number of
+            // revision rows in THIS table) + 1. Counting is per-table (per
+            // smartform lineage), not global to the original activity.
             tables.forEach(t => {
                 let lastId = t.rootSmartformId;
                 for (let i = t.rows.length - 1; i >= 0; i--) {
@@ -969,6 +1033,9 @@ class FSMService {
                     }
                 }
                 t.lastSmartformId = lastId;
+
+                const revisionRowCount = t.rows.filter(r => !r.isOriginal).length;
+                t.nextRevisionNumber = revisionRowCount + 1;
             });
 
             // 5) Fetch attachments for every populated row (smartform + activity)
@@ -989,9 +1056,6 @@ class FSMService {
                     row.attachmentDescription = att.description || '';
                 }
             }));
-
-            // Drop internal helper map before returning.
-            tables.forEach(t => { delete t._rowByActivityId; });
 
             return { activities, tables, originalServiceCallId, originalActivityId, originalCode };
         } catch (error) {

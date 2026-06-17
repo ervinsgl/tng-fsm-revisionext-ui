@@ -104,7 +104,8 @@ sap.ui.define([
             const oSmartform = oCtx ? {
                 rootSmartformId: oCtx.getProperty("rootSmartformId"),
                 lastSmartformId: oCtx.getProperty("lastSmartformId"),
-                rootPruefberichtNr: oCtx.getProperty("rootPruefberichtNr")
+                rootPruefberichtNr: oCtx.getProperty("rootPruefberichtNr"),
+                nextRevisionNumber: oCtx.getProperty("nextRevisionNumber")
             } : null;
 
             const sServiceCallId = oModel.getProperty("/originalServiceCallId");
@@ -122,10 +123,14 @@ sap.ui.define([
                 const payload = result.payload || {};
                 const nextRev = result.nextRevisionNumber;
                 const smartformPayload = result.smartformPayload || [];
+                const scExists = result.serviceCallExists;
+                const revisionCode = result.revisionCode || "";
 
                 const sText =
                     `Original smartform UUID: ${sRootSmartformId || "(unknown)"}\n` +
-                    `Next revision number: ${nextRev != null ? nextRev : "(unknown)"}\n\n` +
+                    `Next revision number: ${nextRev != null ? nextRev : "(unknown)"}\n` +
+                    `Revision ServiceCall: ${revisionCode} ` +
+                    `(${scExists ? "EXISTS — activity will be appended" : "NEW — will be created"})\n\n` +
                     `=== ServiceCall + Activity payload ===\n` +
                     JSON.stringify(payload, null, 2) +
                     `\n\n=== Smartform payload ===\n` +

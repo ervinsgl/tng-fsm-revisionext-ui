@@ -198,7 +198,8 @@ app.get('/api/service-call-tree', async (req, res) => {
     const smartform = {
         rootSmartformId: req.query.rootSmartformId,
         lastSmartformId: req.query.lastSmartformId,
-        rootPruefberichtNr: req.query.rootPruefberichtNr
+        rootPruefberichtNr: req.query.rootPruefberichtNr,
+        nextRevisionNumber: req.query.nextRevisionNumber
     };
 
     if (!serviceCallId) {
