@@ -106,8 +106,9 @@
                     items="{view>/tables}"
                     class="sapUiSmallMarginTop">
 
-                    <Table
-                        items="{view>rows}"
+                    <Panel
+                        expandable="true"
+                        expanded="false"
                         class="sapUiResponsiveMargin"
                         width="auto">
 
@@ -123,39 +124,45 @@
                             </Toolbar>
                         </headerToolbar>
 
-                        <columns>
-                            <Column width="7rem"><header><Text text="Revision" /></header></Column>
-                            <Column width="6rem"><header><Text text="Code" /></header></Column>
-                            <Column><header><Text text="Activity ID" /></header></Column>
-                            <Column><header><Text text="Subject" /></header></Column>
-                            <Column><header><Text text="Smartform Description" /></header></Column>
-                            <Column><header><Text text="Smartform Name" /></header></Column>
-                            <Column><header><Text text="Attachment Description" /></header></Column>
-                            <Column><header><Text text="Attachment Name" /></header></Column>
-                            <Column><header><Text text="Revision/Report Name" /></header></Column>
-                        </columns>
+                        <content>
+                            <Table
+                                items="{view>rows}"
+                                width="auto">
 
-                        <items>
-                            <ColumnListItem
-                                highlight="{= ${view>isOriginal} ? 'Information' : 'None' }">
-                                <cells>
-                                    <ObjectStatus
-                                        text="{view>revisionLabel}"
-                                        state="{= ${view>isOriginal} ? 'Information' : 'None' }"
-                                        inverted="{view>isOriginal}" />
-                                    <Text text="{view>code}" />
-                                    <Text text="{view>id}" />
-                                    <Text text="{view>subject}" />
-                                    <Text text="{view>smartformDescription}" />
-                                    <Text text="{view>smartformName}" />
-                                    <Text text="{view>attachmentDescription}" />
-                                    <Text text="{view>attachmentName}" />
-                                    <Text text="{view>revisionName}" />
-                                </cells>
-                            </ColumnListItem>
-                        </items>
+                                <columns>
+                                    <Column width="7rem"><header><Text text="Revision" /></header></Column>
+                                    <Column width="6rem"><header><Text text="Code" /></header></Column>
+                                    <Column><header><Text text="Activity ID" /></header></Column>
+                                    <Column><header><Text text="Smartform Description" /></header></Column>
+                                    <Column><header><Text text="Smartform Name" /></header></Column>
+                                    <Column><header><Text text="Attachment Name" /></header></Column>
+                                    <Column width="6rem"><header><Text text="Status" /></header></Column>
+                                </columns>
 
-                    </Table>
+                                <items>
+                                    <ColumnListItem
+                                        highlight="{= ${view>isOriginal} ? 'Information' : 'None' }">
+                                        <cells>
+                                            <ObjectStatus
+                                                text="{view>revisionLabel}"
+                                                state="{= ${view>isOriginal} ? 'Information' : 'None' }"
+                                                inverted="{view>isOriginal}" />
+                                            <Text text="{view>code}" />
+                                            <Text text="{view>id}" />
+                                            <Text text="{view>smartformDescription}" />
+                                            <Text text="{view>smartformName}" />
+                                            <Text text="{view>attachmentName}" />
+                                            <ObjectStatus
+                                                text="{view>statusText}"
+                                                state="{= !${view>hasSmartform} ? 'None' : (${view>closed} ? 'Success' : 'Error') }" />
+                                        </cells>
+                                    </ColumnListItem>
+                                </items>
+
+                            </Table>
+                        </content>
+
+                    </Panel>
 
                 </VBox>
 

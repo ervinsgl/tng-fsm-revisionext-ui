@@ -185,7 +185,7 @@ class FSMService {
      * Transform a fetched ServiceCall composite-tree into the payload for a
      * NEW revision's ServiceCall header. Mutates the header in place:
      *   - id -> null
-     *   - code -> `<code>-Rev-<NNN>-<N>` (N = nextRevisionNumber, NNN zero-padded to 3)
+     *   - code -> `<code>-Rev-<NNN>` (N = nextRevisionNumber, NNN zero-padded to 3)
      *   - subject -> `<originalCode> Rev-<N>`
      *   - remove transient/child fields
      *   - upsert Z_RevisionOfActivity = originalCode, Z_revisionNumber = N
@@ -209,7 +209,7 @@ class FSMService {
         // with X-Create-Or-Update branches on this.
         tree.id = existingServiceCallId || null;
         if (tree.code != null) {
-            tree.code = `${tree.code}-Rev-${padded}-${n}`;
+            tree.code = `${tree.code}-Rev-${padded}`;
         }
         tree.subject = `${originalCode} Rev-${n}`;
         // externalId belongs to the original SC; the revision SC must not carry it.
@@ -265,13 +265,16 @@ class FSMService {
      * @returns {Object} the mutated activity
      * @private
      */
-    _transformRevisionActivity(act, originalActivityId, originalCode, nextRevisionNumber, baseUrl, companyId) {
+    _transformRevisionActivity(act, originalActivityId, originalCode, nextRevisionNumber, baseUrl, companyId, activityCode, existingActivityId) {
         if (!act || typeof act !== 'object') return act;
 
         const n = nextRevisionNumber;
 
-        act.id = null;
-        act.code = null;
+        // id: existing revision activity id (append smartforms to it) or null
+        // (create). code: "<originalCode>-Rev-<NNN>" so the one activity per
+        // revision level is identifiable.
+        act.id = existingActivityId || null;
+        act.code = activityCode || null;
         act.externalId = null;
 
         // Link the new activity to the original so the read pipeline finds it
@@ -294,7 +297,7 @@ class FSMService {
         // Remove transient / child-collection fields.
         ['lastChanged', 'remarks', 'contact', 'reservedMaterials', 'requirements',
          'region', 'workflowSteps', 'internalRemarks', 'internalRemarks2',
-         'statusChangeReason', 'activityFeedbacks'
+         'statusChangeReason', 'activityFeedbacks', 'plannedStartDate', 'plannedEndDate'
         ].forEach(f => { delete act[f]; });
 
         // Upsert revision UDFs.
@@ -353,7 +356,7 @@ class FSMService {
      * @returns {Promise<Array>} single-element smartform payload array
      * @private
      */
-    async _buildRevisionSmartformPayload(rootSmartformId, previousChecklistId, pruefberichtNr, nextRevisionNumber) {
+    async _buildRevisionSmartformPayload(rootSmartformId, previousChecklistId, pruefberichtNr, nextRevisionNumber, activityObjectId) {
         const root = await this._getChecklistInstanceFull(rootSmartformId);
         if (!root) return [];
 
@@ -378,7 +381,9 @@ class FSMService {
             checklistId: this._uuidV4(),
             syncStatus: 'IN_CLOUD',
             object: {
-                objectId: '<NEW_ACTIVITY_UUID>', // placeholder; set after activity creation
+                // Existing revision activity id (smartform attaches to it) or the
+                // placeholder, set once the activity is created.
+                objectId: activityObjectId || '<NEW_ACTIVITY_UUID>',
                 objectType: 'ACTIVITY'
             }
         }];
@@ -431,36 +436,134 @@ class FSMService {
         // (keep its id); otherwise a new SC is created (id null).
         const padded = String(nextRevisionNumber).padStart(3, '0');
         const baseScCode = tree.code != null ? tree.code : originalCode;
-        const revisionCode = `${baseScCode}-Rev-${padded}-${nextRevisionNumber}`;
+        const revisionCode = `${baseScCode}-Rev-${padded}`;
         const existingServiceCallId = await this._getServiceCallIdByCode(revisionCode);
+
+        // Revision activity code = original activity code + same suffix
+        // (e.g. '19846-Rev-003'). One activity per revision level; check if it
+        // already exists (attach smartforms to it) or must be created.
+        const activityCode = `${originalCode}-Rev-${padded}`;
+        const existingActivityId = await this._getActivityIdByCode(activityCode);
 
         // Header transform (id = existing SC id or null).
         this._transformRevisionHeader(tree, originalCode, nextRevisionNumber, existingServiceCallId);
 
-        // Activity transform (the single kept original activity segment).
+        // Capture the original activity's Z_FollowUpRevisions BEFORE the
+        // transform strips it (the activity transform removes this UDF).
+        let existingFollowUps = null;
+        if (Array.isArray(tree.activities)) {
+            const origAct = tree.activities.find(a => a && a.id === originalActivityId) || tree.activities[0];
+            if (origAct) existingFollowUps = this._udfCompositeTree(origAct, 'Z_FollowUpRevisions');
+        }
+
+        // Activity transform: code = revision code, id = existing activity id
+        // (append smartforms) or null (create).
         if (Array.isArray(tree.activities)) {
             tree.activities = tree.activities.map(act =>
-                this._transformRevisionActivity(act, originalActivityId, originalCode, nextRevisionNumber, baseUrl, companyId)
+                this._transformRevisionActivity(act, originalActivityId, originalCode, nextRevisionNumber, baseUrl, companyId, activityCode, existingActivityId)
             );
         }
 
-        // Smartform payload (per the table whose button was pressed).
-        let smartformPayload = [];
+        // Smartform payload (per the table whose button was pressed). The
+        // smartform attaches to the existing revision activity if present;
+        // otherwise to the placeholder (filled once the activity is created).
+        // FSM POST ChecklistInstance takes the object directly (no array wrap).
+        let smartformPayload = null;
         if (smartform && smartform.rootSmartformId) {
-            smartformPayload = await this._buildRevisionSmartformPayload(
+            const arr = await this._buildRevisionSmartformPayload(
                 smartform.rootSmartformId,
                 smartform.lastSmartformId,
                 smartform.rootPruefberichtNr,
-                nextRevisionNumber
+                nextRevisionNumber,
+                existingActivityId
             );
+            smartformPayload = (arr && arr.length) ? arr[0] : null;
+            if (smartformPayload) this._stripNulls(smartformPayload);
         }
+
+        // Follow-up revisions PATCH payload for the ORIGINAL activity: ONLY when
+        // a NEW revision activity is created (not when attaching a smartform to
+        // an existing revision activity — that would duplicate the line).
+        const followUpPayload = existingActivityId
+            ? null
+            : this._buildFollowUpRevisionsPayload(existingFollowUps, originalCode, nextRevisionNumber, baseUrl, companyId);
+
+        // FSM rejects explicit nulls on create (Object.toString() on null).
+        // Strip every null key/value pair from the SC payload. On the create
+        // branch this also removes the (now-null) id, leaving the key absent.
+        this._stripNulls(tree);
 
         return {
             payload: tree,
             nextRevisionNumber,
             smartformPayload,
             serviceCallExists: !!existingServiceCallId,
-            revisionCode
+            existingServiceCallId: existingServiceCallId || null,
+            activityExists: !!existingActivityId,
+            existingActivityId: existingActivityId || null,
+            activityCode,
+            revisionCode,
+            followUpPayload,
+            originalActivityId,
+            originalServiceCallId,
+            companyId,
+            account: dcfg.account || this.config.account
+        };
+    }
+
+    /**
+     * Recursively remove every key whose value is null (FSM rejects explicit
+     * nulls on create — it calls .toString() on them). Arrays are preserved
+     * (elements recursed); objects drop null-valued keys. Mutates in place.
+     * @param {*} node
+     * @returns {*}
+     * @private
+     */
+    _stripNulls(node) {
+        if (Array.isArray(node)) {
+            node.forEach(el => this._stripNulls(el));
+            return node;
+        }
+        if (node && typeof node === 'object') {
+            Object.keys(node).forEach(k => {
+                if (node[k] === null) {
+                    delete node[k];
+                } else {
+                    this._stripNulls(node[k]);
+                }
+            });
+        }
+        return node;
+    }
+
+    /**
+     * Build the Z_FollowUpRevisions update payload for the original activity.
+     * Appends a line for the new revision to the existing value, or creates the
+     * value fresh if none exists. New activity UUID is a placeholder.
+     *
+     * Line format: "\n<code> Rev-<N> - Rev-Nr. <N>: <activity link>"
+     *
+     * @param {string|null} existingValue - current Z_FollowUpRevisions value
+     * @param {string} originalCode - activity code (e.g. '19846')
+     * @param {number} nextRevisionNumber
+     * @param {string} baseUrl
+     * @param {string} companyId
+     * @returns {Object} { udfValues: [{ meta: { externalId }, value }] }
+     * @private
+     */
+    _buildFollowUpRevisionsPayload(existingValue, originalCode, nextRevisionNumber, baseUrl, companyId) {
+        const n = nextRevisionNumber;
+        const base = (baseUrl || '').replace(/\/+$/, '');
+        const link = `${base}/shell/#/planning-dispatching/activities/view/<NEW_ACTIVITY_UUID>/details?selectedCompanyId=${companyId}`;
+        const newLine = `\n${originalCode} Rev-${n} - Rev-Nr. ${n}: ${link}`;
+
+        const prior = (existingValue != null && String(existingValue).trim() !== '') ? String(existingValue) : '';
+        const value = prior + newLine;
+
+        return {
+            udfValues: [
+                { meta: { externalId: 'Z_FollowUpRevisions' }, value }
+            ]
         };
     }
 
@@ -515,7 +618,7 @@ class FSMService {
      * @private
      */
     async _getChecklistInstances(objectId) {
-        const query = `SELECT w.id, w.template, w.description, w.udf.Z_PreviousChecklist, w.udf.Z_PruefberichtNr FROM ChecklistInstance w WHERE w.object.objectId = '${objectId}' AND w.closed = true`;
+        const query = `SELECT w.id, w.template, w.description, w.closed, w.udf.Z_PreviousChecklist, w.udf.Z_PruefberichtNr FROM ChecklistInstance w WHERE w.object.objectId = '${objectId}'`;
         const data = await this.makeQueryRequest(query, 'ChecklistInstance.20');
 
         if (!data.data || data.data.length === 0) return [];
@@ -530,6 +633,8 @@ class FSMService {
                 // Clean description (no ID concat) for table cells.
                 rawDescription: desc || '',
                 template: w.template || null,
+                // Open/closed status (now that open smartforms are shown too).
+                closed: w.closed === true,
                 // Z_PreviousChecklist links a smartform to its predecessor;
                 // when it equals own id, the smartform is an original (root).
                 // Selecting w.udf.Z_PreviousChecklist explicitly makes FSM return
@@ -663,6 +768,7 @@ class FSMService {
                     rawDescription: inst.rawDescription || '',
                     previousChecklist: inst.previousChecklist || null,
                     pruefberichtNr: inst.pruefberichtNr || null,
+                    closed: inst.closed === true,
                     name: tmpl.name || null,
                     attachments: []
                 });
@@ -729,7 +835,7 @@ class FSMService {
     /**
      * Look up a ServiceCall id by its code. Used to decide whether a revision
      * ServiceCall already exists (append) or must be created.
-     * @param {string} code - e.g. '8200002124-Rev-002-2'
+     * @param {string} code - e.g. '8200002124-Rev-002'
      * @returns {Promise<string|null>} existing SC id, or null if none
      * @private
      */
@@ -737,6 +843,22 @@ class FSMService {
         if (!code) return null;
         const query = `SELECT w.id FROM ServiceCall w WHERE w.code = '${code}'`;
         const data = await this.makeQueryRequest(query, 'ServiceCall.27');
+        if (!data.data || data.data.length === 0) return null;
+        const w = data.data[0].w;
+        return (w && w.id) ? w.id : null;
+    }
+
+    /**
+     * Look up an Activity id by its code. Used to decide whether a revision
+     * activity already exists (attach smartforms to it) or must be created.
+     * @param {string} code - e.g. '19846-Rev-002'
+     * @returns {Promise<string|null>} existing activity id, or null if none
+     * @private
+     */
+    async _getActivityIdByCode(code) {
+        if (!code) return null;
+        const query = `SELECT w.id FROM Activity w WHERE w.code = '${code}'`;
+        const data = await this.makeQueryRequest(query, 'Activity.43');
         if (!data.data || data.data.length === 0) return null;
         const w = data.data[0].w;
         return (w && w.id) ? w.id : null;
@@ -905,8 +1027,8 @@ class FSMService {
      *   revisionLabel, code, id, subject        - activity columns
      *   smartformDescription, smartformName     - populated where a smartform
      *                                             exists for that activity
-     *   attachmentDescription, attachmentName,
-     *   revisionName                            - empty for now
+     *   attachmentDescription, attachmentName   - attachment columns
+     *   statusText, closed                      - smartform Open/Closed status
      *   isOriginal, hasSmartform                - flags
      *
      * @param {string} contextActivityId - Activity id from the FSM context
@@ -943,7 +1065,12 @@ class FSMService {
                     return (sfs || []).map(sf => ({ ...sf, activityId: act.id }));
                 })
             );
-            const allSmartforms = perActivity.flat();
+            // On the ORIGINAL activity, only show CLOSED smartforms (open ones are
+            // still being worked on and shouldn't form a table). On REVISION
+            // activities, show both (status column reflects open/closed).
+            const allSmartforms = perActivity.flat().filter(sf =>
+                sf.activityId !== originalActivityId || sf.closed === true
+            );
 
             // 2) Index by id for chain resolution.
             const byId = new Map();
@@ -1004,8 +1131,10 @@ class FSMService {
                             smartformName: sf ? (sf.name || '') : '',
                             attachmentDescription: '',
                             attachmentName: '',
-                            revisionName: '',
-                            hasSmartform: !!sf
+                            hasSmartform: !!sf,
+                            // Open/Closed status for the smartform on this row.
+                            closed: sf ? (sf.closed === true) : false,
+                            statusText: sf ? (sf.closed === true ? 'Closed' : 'Open') : ''
                         };
                     });
 

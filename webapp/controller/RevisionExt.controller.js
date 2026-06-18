@@ -122,19 +122,60 @@ sap.ui.define([
                 const result = await RevisionService.getServiceCallTree(sServiceCallId, sKeepActivityId, sOriginalCode, oSmartform);
                 const payload = result.payload || {};
                 const nextRev = result.nextRevisionNumber;
-                const smartformPayload = result.smartformPayload || [];
+                const smartformPayload = result.smartformPayload || {};
                 const scExists = result.serviceCallExists;
                 const revisionCode = result.revisionCode || "";
+                const followUpPayload = result.followUpPayload; // null when activity exists
+                const actExists = result.activityExists;
+                const activityCode = result.activityCode || "";
 
-                const sText =
+                const sCompanyParam = "TUEV-NORD_S4E";
+                const sAccountParam = result.account || "TUEV-NORD_T1";
+                const sScId = result.existingServiceCallId || ""; // empty when new
+                const sOrigActId = result.originalActivityId || "";
+
+                // 1) ServiceCall composite-tree PATCH (create or update).
+                const sScCall =
+                    `PATCH /api/fsm-connector/v1/composite-tree/service-calls/${sScId}` +
+                    `?forceUpdate=true&company=${sCompanyParam}&account=${sAccountParam}\n` +
+                    `X-Client-Version\nX-Client-ID\nX-Create-Or-Update 'true'`;
+
+                // 2) Smartform (ChecklistInstance) POST (create).
+                const sSfCall =
+                    `POST /api/data/v4/ChecklistInstance` +
+                    `?dtos=ChecklistInstance.20&company=${sCompanyParam}&account=${sAccountParam}\n` +
+                    `X-Client-Version\nX-Client-ID`;
+
+                let sText =
                     `Original smartform UUID: ${sRootSmartformId || "(unknown)"}\n` +
                     `Next revision number: ${nextRev != null ? nextRev : "(unknown)"}\n` +
                     `Revision ServiceCall: ${revisionCode} ` +
-                    `(${scExists ? "EXISTS — activity will be appended" : "NEW — will be created"})\n\n` +
-                    `=== ServiceCall + Activity payload ===\n` +
+                    `(${scExists ? "EXISTS — activity appended" : "NEW — will be created"})\n` +
+                    `Revision Activity: ${activityCode} ` +
+                    `(${actExists ? "EXISTS — smartform attached" : "NEW — will be created"})\n\n` +
+                    `=== ServiceCall + Activity (PATCH) ===\n` +
+                    sScCall + `\n\n` +
                     JSON.stringify(payload, null, 2) +
-                    `\n\n=== Smartform payload ===\n` +
+                    `\n\n=== Smartform (POST) ===\n` +
+                    sSfCall + `\n\n` +
                     JSON.stringify(smartformPayload, null, 2);
+
+                // 3) Follow-up revisions PATCH — only when a NEW revision activity
+                //    is created (skipped when attaching to an existing activity).
+                if (followUpPayload) {
+                    const sFollowCall =
+                        `PATCH /api/data/v4/Activity/${sOrigActId}` +
+                        `?dtos=Activity.43&company=${sCompanyParam}&account=${sAccountParam}&forceUpdate=true\n` +
+                        `X-Client-Version\nX-Client-ID`;
+                    sText +=
+                        `\n\n=== Follow-up revisions update (PATCH — not implemented yet) ===\n` +
+                        sFollowCall + `\n\n` +
+                        JSON.stringify(followUpPayload, null, 2);
+                } else {
+                    sText +=
+                        `\n\n=== Follow-up revisions update ===\n` +
+                        `(skipped — revision activity already exists)`;
+                }
 
                 MessageBox.information(sText, {
                     title: "Create Revision — New Revision Payload",
