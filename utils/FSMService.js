@@ -238,6 +238,8 @@ class FSMService {
             tree.code = `${tree.code}-Rev-${padded}`;
         }
         tree.subject = `${originalCode} Rev-${n}`;
+        // Revision ServiceCalls use type '-8' (original is '-1').
+        tree.type = '-8';
         // externalId belongs to the original SC; the revision SC must not carry it.
         delete tree.externalId;
 
