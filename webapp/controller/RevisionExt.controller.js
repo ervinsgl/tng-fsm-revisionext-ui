@@ -45,6 +45,7 @@ sap.ui.define([
                     cloudId: context.cloudId
                 });
 
+                this._objectId = context.cloudId;
                 this._loadRevisions(context.cloudId);
 
             } catch (error) {
@@ -88,10 +89,10 @@ sap.ui.define([
         },
 
         /**
-         * Per-table Create Revision. Reads the pressed button's table context
-         * to get that table's root smartform id, builds the next-revision
-         * payload (SC + activity, same base for every table), and shows the
-         * original smartform UUID + next revision number + payload.
+         * Per-table Create Revision. Builds the next-revision preview, shows a
+         * confirmation dialog (basic info + Create/Close). On Create, executes
+         * the full flow (PATCH SC -> POST smartform -> PATCH follow-up), shows a
+         * success dialog, and refreshes the tables.
          *
          * @param {sap.ui.base.Event} oEvent - button press event
          */
@@ -100,7 +101,6 @@ sap.ui.define([
 
             // The pressed button's binding context is the table object.
             const oCtx = oEvent.getSource().getBindingContext("view");
-            const sRootSmartformId = oCtx ? oCtx.getProperty("rootSmartformId") : null;
             const oSmartform = oCtx ? {
                 rootSmartformId: oCtx.getProperty("rootSmartformId"),
                 lastSmartformId: oCtx.getProperty("lastSmartformId"),
@@ -117,73 +117,69 @@ sap.ui.define([
                 return;
             }
 
+            // Build the preview (basic info for the confirmation dialog).
+            oModel.setProperty("/busy", true);
+            let preview;
+            try {
+                preview = await RevisionService.getServiceCallTree(sServiceCallId, sKeepActivityId, sOriginalCode, oSmartform);
+            } catch (error) {
+                console.error("Failed to build revision preview:", error.message);
+                MessageBox.error("Failed to prepare the revision: " + error.message);
+                return;
+            } finally {
+                oModel.setProperty("/busy", false);
+            }
+
+            const nextRev = preview.nextRevisionNumber;
+            const revisionCode = preview.revisionCode || "";
+            const activityCode = preview.activityCode || "";
+            const scExists = preview.serviceCallExists;
+            const actExists = preview.activityExists;
+            const smartformDescription = (preview.smartformPayload && preview.smartformPayload.description) || "";
+
+            const sInfo =
+                `Next revision number: ${nextRev != null ? nextRev : "(unknown)"}\n` +
+                `Revision ServiceCall: ${revisionCode} ` +
+                `(${scExists ? "EXISTS — activity will be appended" : "NEW — will be created"})\n` +
+                `Revision Activity: ${activityCode} ` +
+                `(${actExists ? "EXISTS — smartform attached" : "NEW — will be created"})\n` +
+                `Smartform description: ${smartformDescription}`;
+
+            MessageBox.confirm(sInfo, {
+                title: "Create Revision",
+                actions: ["Create", MessageBox.Action.CLOSE],
+                emphasizedAction: "Create",
+                onClose: (sAction) => {
+                    if (sAction === "Create") {
+                        this._executeCreateRevision(sServiceCallId, sKeepActivityId, sOriginalCode, oSmartform);
+                    }
+                }
+            });
+        },
+
+        /**
+         * Execute the create-revision flow, then show success and refresh.
+         */
+        async _executeCreateRevision(sServiceCallId, sKeepActivityId, sOriginalCode, oSmartform) {
+            const oModel = this.getView().getModel("view");
             oModel.setProperty("/busy", true);
             try {
-                const result = await RevisionService.getServiceCallTree(sServiceCallId, sKeepActivityId, sOriginalCode, oSmartform);
-                const payload = result.payload || {};
+                const result = await RevisionService.createRevision(sServiceCallId, sKeepActivityId, sOriginalCode, oSmartform);
                 const nextRev = result.nextRevisionNumber;
-                const smartformPayload = result.smartformPayload || {};
-                const scExists = result.serviceCallExists;
-                const revisionCode = result.revisionCode || "";
-                const followUpPayload = result.followUpPayload; // null when activity exists
-                const actExists = result.activityExists;
-                const activityCode = result.activityCode || "";
+                const sfDesc = result.smartformDescription || "";
 
-                const sCompanyParam = "TUEV-NORD_S4E";
-                const sAccountParam = result.account || "TUEV-NORD_T1";
-                const sScId = result.existingServiceCallId || ""; // empty when new
-                const sOrigActId = result.originalActivityId || "";
-
-                // 1) ServiceCall composite-tree PATCH (create or update).
-                const sScCall =
-                    `PATCH /api/fsm-connector/v1/composite-tree/service-calls/${sScId}` +
-                    `?forceUpdate=true&company=${sCompanyParam}&account=${sAccountParam}\n` +
-                    `X-Client-Version\nX-Client-ID\nX-Create-Or-Update 'true'`;
-
-                // 2) Smartform (ChecklistInstance) POST (create).
-                const sSfCall =
-                    `POST /api/data/v4/ChecklistInstance` +
-                    `?dtos=ChecklistInstance.20&company=${sCompanyParam}&account=${sAccountParam}\n` +
-                    `X-Client-Version\nX-Client-ID`;
-
-                let sText =
-                    `Original smartform UUID: ${sRootSmartformId || "(unknown)"}\n` +
-                    `Next revision number: ${nextRev != null ? nextRev : "(unknown)"}\n` +
-                    `Revision ServiceCall: ${revisionCode} ` +
-                    `(${scExists ? "EXISTS — activity appended" : "NEW — will be created"})\n` +
-                    `Revision Activity: ${activityCode} ` +
-                    `(${actExists ? "EXISTS — smartform attached" : "NEW — will be created"})\n\n` +
-                    `=== ServiceCall + Activity (PATCH) ===\n` +
-                    sScCall + `\n\n` +
-                    JSON.stringify(payload, null, 2) +
-                    `\n\n=== Smartform (POST) ===\n` +
-                    sSfCall + `\n\n` +
-                    JSON.stringify(smartformPayload, null, 2);
-
-                // 3) Follow-up revisions PATCH — only when a NEW revision activity
-                //    is created (skipped when attaching to an existing activity).
-                if (followUpPayload) {
-                    const sFollowCall =
-                        `PATCH /api/data/v4/Activity/${sOrigActId}` +
-                        `?dtos=Activity.43&company=${sCompanyParam}&account=${sAccountParam}&forceUpdate=true\n` +
-                        `X-Client-Version\nX-Client-ID`;
-                    sText +=
-                        `\n\n=== Follow-up revisions update (PATCH — not implemented yet) ===\n` +
-                        sFollowCall + `\n\n` +
-                        JSON.stringify(followUpPayload, null, 2);
-                } else {
-                    sText +=
-                        `\n\n=== Follow-up revisions update ===\n` +
-                        `(skipped — revision activity already exists)`;
+                // Refresh tables with new data before showing success.
+                if (this._objectId) {
+                    await this._loadRevisions(this._objectId);
                 }
 
-                MessageBox.information(sText, {
-                    title: "Create Revision — New Revision Payload",
-                    contentWidth: "40rem"
-                });
+                MessageBox.success(
+                    `Revision number ${nextRev} made for smartform '${sfDesc}'.`,
+                    { title: "Revision Created" }
+                );
             } catch (error) {
-                console.error("Failed to build revision payload:", error.message);
-                MessageBox.error("Failed to build the new revision payload: " + error.message);
+                console.error("Failed to create revision:", error.message);
+                MessageBox.error("Failed to create revision: " + error.message);
             } finally {
                 oModel.setProperty("/busy", false);
             }

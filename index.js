@@ -215,6 +215,30 @@ app.get('/api/service-call-tree', async (req, res) => {
     }
 });
 
+/**
+ * POST /api/create-revision
+ * Body: { serviceCallId, keepActivityId, originalCode, smartform: {...} }
+ *
+ * Executes the full create flow: PATCH ServiceCall (create/append) -> POST
+ * smartform (with the created activity id) -> PATCH original activity's
+ * Z_FollowUpRevisions (only when a new revision activity was created).
+ */
+app.post('/api/create-revision', async (req, res) => {
+    const { serviceCallId, keepActivityId, originalCode, smartform } = req.body || {};
+
+    if (!serviceCallId) {
+        return res.status(400).json({ message: 'Missing serviceCallId in request body.' });
+    }
+
+    try {
+        const result = await FSMService.createRevision(serviceCallId, keepActivityId, originalCode, smartform);
+        return res.json({ data: result });
+    } catch (error) {
+        console.error('create-revision route error:', error.message);
+        return res.status(502).json({ message: 'Failed to create revision: ' + error.message });
+    }
+});
+
 // ===========================
 // STATIC FILES (UI5 frontend)
 // ===========================

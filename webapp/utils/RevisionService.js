@@ -89,6 +89,33 @@ sap.ui.define([], () => {
 
             const data = await response.json();
             return data.data || {};
+        },
+
+        /**
+         * Execute the create-revision flow (PATCH SC -> POST smartform -> PATCH
+         * original activity follow-up). Returns a summary.
+         *
+         * @param {string} serviceCallId - original activity's ServiceCall id
+         * @param {string} keepActivityId - original activity id
+         * @param {string} originalCode - original activity code
+         * @param {Object} smartform - { rootSmartformId, lastSmartformId, rootPruefberichtNr, nextRevisionNumber }
+         * @returns {Promise<Object>} { nextRevisionNumber, revisionCode, activityCode, smartformDescription, newActivityId }
+         */
+        async createRevision(serviceCallId, keepActivityId, originalCode, smartform) {
+            if (!serviceCallId) throw new Error("No serviceCallId provided");
+
+            const response = await fetch("/api/create-revision", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ serviceCallId, keepActivityId, originalCode, smartform })
+            });
+            if (!response.ok) {
+                let msg = `Create revision HTTP ${response.status}`;
+                try { const e = await response.json(); if (e && e.message) msg = e.message; } catch (ignore) { /* noop */ }
+                throw new Error(msg);
+            }
+            const data = await response.json();
+            return data.data || {};
         }
 
     };

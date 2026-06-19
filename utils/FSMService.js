@@ -57,6 +57,32 @@ class FSMService {
     }
 
     /**
+     * Resolve destination + token + base headers/params for a write call.
+     * @returns {Promise<{baseUrl, params, headers}>}
+     * @private
+     */
+    async _getRequestContext() {
+        const destination = await DestinationService.getDestination(DESTINATION_NAME);
+        const token = await TokenCache.getToken(destination);
+        const config = destination.destinationConfiguration;
+        return {
+            baseUrl: config.URL,
+            params: {
+                account: config.account || this.config.account,
+                company: config.company || this.config.company
+            },
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`,
+                'X-Account-ID': config['URL.headers.X-Account-ID'],
+                'X-Company-ID': config['URL.headers.X-Company-ID'],
+                'X-Client-ID': config['URL.headers.X-Client-ID'],
+                'X-Client-Version': config['URL.headers.X-Client-Version']
+            }
+        };
+    }
+
+    /**
      * Make a Query API request (/api/query/v1).
      * @param {string} query - FSM CoreSQL query string
      * @param {string} dtos  - DTO version string (e.g. 'ChecklistInstance.20')
@@ -488,6 +514,11 @@ class FSMService {
             ? null
             : this._buildFollowUpRevisionsPayload(existingFollowUps, originalCode, nextRevisionNumber, baseUrl, companyId);
 
+        // FSM requires exactly one of id/code/externalId on reference objects.
+        // Reduce them (prefer id, then externalId, then code) before stripping
+        // nulls (reduction may itself leave a single non-null key).
+        this._reduceIdentifierRefs(tree);
+
         // FSM rejects explicit nulls on create (Object.toString() on null).
         // Strip every null key/value pair from the SC payload. On the create
         // branch this also removes the (now-null) id, leaving the key absent.
@@ -509,6 +540,220 @@ class FSMService {
             companyId,
             account: dcfg.account || this.config.account
         };
+    }
+
+    /**
+     * PATCH a ServiceCall composite-tree (create-or-update). Returns the
+     * response body (the saved tree, with real ids on created entities).
+     * @param {Object} payload - the transformed SC tree
+     * @param {string|null} serviceCallId - existing SC id (append) or null (create)
+     * @returns {Promise<Object>} saved composite tree
+     * @private
+     */
+    async _patchServiceCallCompositeTree(payload, serviceCallId) {
+        const ctx = await this._getRequestContext();
+        const headers = { ...ctx.headers, 'X-Create-Or-Update': 'true' };
+
+        // Create (no existing id) -> POST to the collection (no forceUpdate).
+        // Update (existing id)    -> PATCH to that resource (with forceUpdate).
+        const isUpdate = !!serviceCallId;
+        const url = isUpdate
+            ? `${ctx.baseUrl}/api/fsm-connector/v1/composite-tree/service-calls/${serviceCallId}`
+            : `${ctx.baseUrl}/api/fsm-connector/v1/composite-tree/service-calls`;
+        const method = isUpdate ? 'patch' : 'post';
+        const params = isUpdate
+            ? { ...ctx.params, forceUpdate: true }
+            : { ...ctx.params };
+
+        try {
+            const response = await axios.request({ method, url, data: payload, params, headers });
+            return response.data || {};
+        } catch (error) {
+            console.error(`[createRevision] SC ${method.toUpperCase()} FAILED status=${error.response?.status} url=${url}`);
+            console.error('[createRevision] SC write response body:', JSON.stringify(error.response?.data || error.message));
+            throw error;
+        }
+    }
+
+    /**
+     * POST a new ChecklistInstance (smartform).
+     * @param {Object} payload - the smartform object
+     * @returns {Promise<Object>} created smartform
+     * @private
+     */
+    async _postChecklistInstance(payload) {
+        const ctx = await this._getRequestContext();
+        const url = `${ctx.baseUrl}/api/data/v4/ChecklistInstance`;
+        const params = { ...ctx.params, dtos: 'ChecklistInstance.20' };
+        try {
+            const response = await axios.post(url, payload, { params, headers: ctx.headers });
+            return response.data || {};
+        } catch (error) {
+            console.error(`[createRevision] Smartform POST FAILED status=${error.response?.status} url=${url}`);
+            console.error('[createRevision] Smartform POST response body:', JSON.stringify(error.response?.data || error.message));
+            throw error;
+        }
+    }
+
+    /**
+     * PATCH an Activity (used to update the original activity's
+     * Z_FollowUpRevisions UDF).
+     * @param {string} activityId
+     * @param {Object} payload
+     * @returns {Promise<Object>}
+     * @private
+     */
+    async _patchActivity(activityId, payload) {
+        const ctx = await this._getRequestContext();
+        const url = `${ctx.baseUrl}/api/data/v4/Activity/${activityId}`;
+        const params = { ...ctx.params, dtos: 'Activity.43', forceUpdate: true };
+        try {
+            const response = await axios.patch(url, payload, { params, headers: ctx.headers });
+            return response.data || {};
+        } catch (error) {
+            console.error(`[createRevision] Activity PATCH FAILED status=${error.response?.status} url=${url}`);
+            console.error('[createRevision] Activity PATCH response body:', JSON.stringify(error.response?.data || error.message));
+            throw error;
+        }
+    }
+
+    /**
+     * Execute the full create-revision flow:
+     *   1) PATCH the ServiceCall composite-tree (create or append).
+     *   2) Find the revision activity (by its assembled code) in the response,
+     *      take its real id.
+     *   3) POST the smartform with object.objectId = that activity id.
+     *   4) If a NEW revision activity was created, PATCH the original activity's
+     *      Z_FollowUpRevisions with the activity link (real id substituted).
+     *
+     * The payload is rebuilt fresh here so the revision number / existence
+     * checks reflect current FSM state at execution time.
+     *
+     * @returns {Promise<Object>} summary { nextRevisionNumber, revisionCode, activityCode, smartformDescription, newActivityId }
+     */
+    async createRevision(originalServiceCallId, originalActivityId, originalCode, smartform) {
+        const built = await this.buildNewRevisionPayload(originalServiceCallId, originalActivityId, originalCode, smartform);
+        const {
+            payload, smartformPayload, followUpPayload,
+            existingServiceCallId, activityCode, revisionCode, nextRevisionNumber
+        } = built;
+
+        // 1) PATCH/POST ServiceCall (create or append).
+        const savedTree = await this._patchServiceCallCompositeTree(payload, existingServiceCallId);
+
+        // 2) Locate the revision activity by its assembled code; take its real id.
+        const savedActivities = Array.isArray(savedTree.activities) ? savedTree.activities : [];
+        const savedActivity = savedActivities.find(a => a && a.code === activityCode);
+        const newActivityId = savedActivity ? savedActivity.id : null;
+        if (!newActivityId) {
+            throw new Error(`Created revision activity (code ${activityCode}) not found in ServiceCall response.`);
+        }
+
+        // 2b) composite-tree create does NOT persist previousActivity on a new
+        //     child activity, so the read pipeline (which filters on it) won't
+        //     find the revision. Set it via a direct Activity PATCH. Only needed
+        //     when the activity was newly created (existing ones already link).
+        if (!built.existingActivityId) {
+            const linkPayload = {
+                previousActivity: originalActivityId,
+                udfValues: [
+                    { udfMeta: { externalId: 'Z_Activity_Type' }, value: '-7' }
+                ]
+            };
+            await this._patchActivity(newActivityId, linkPayload);
+        }
+
+        // 3) POST smartform, with object.objectId = the real activity id.
+        let smartformDescription = '';
+        if (smartformPayload) {
+            if (smartformPayload.object) smartformPayload.object.objectId = newActivityId;
+            smartformDescription = smartformPayload.description || '';
+            await this._postChecklistInstance(smartformPayload);
+        }
+
+        // 4) PATCH original activity's Z_FollowUpRevisions (only when new activity).
+        if (followUpPayload) {
+            // Substitute the placeholder link with the real activity id.
+            (followUpPayload.udfValues || []).forEach(u => {
+                if (u && typeof u.value === 'string') {
+                    u.value = u.value.split('<NEW_ACTIVITY_UUID>').join(newActivityId);
+                }
+            });
+            await this._patchActivity(originalActivityId, followUpPayload);
+        }
+
+        return {
+            nextRevisionNumber,
+            revisionCode,
+            activityCode,
+            smartformDescription,
+            newActivityId
+        };
+    }
+
+    /**
+     * FSM requires exactly one of id/code/externalId on identifier-reference
+     * objects (businessPartner, responsibles, serviceProduct, item, warehouse,
+     * etc.). Recursively reduce any such reference to a single identifier,
+     * preferring id, then externalId, then code. A "reference" is an object
+     * whose keys are a subset of {id, code, externalId} with at least one set
+     * (so the SC/activity headers, which have many other keys, are NOT touched).
+     * Mutates in place.
+     * @param {*} node
+     * @returns {*}
+     * @private
+     */
+    _reduceIdentifierRefs(node) {
+        const REF_KEYS = ['id', 'code', 'externalId'];
+        const present = v => v != null && String(v).trim() !== '';
+
+        // Is this object an identifier reference (keys ⊆ ref-keys)?
+        const isRefObject = obj => {
+            if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false;
+            const keys = Object.keys(obj);
+            return keys.length > 0 && keys.every(k => REF_KEYS.includes(k));
+        };
+        // Reduce a ref to a single identifier (id > externalId > code).
+        // Returns true if a usable identifier remains, false if the ref is empty.
+        const reduceRef = obj => {
+            const keep = present(obj.id) ? 'id'
+                : (present(obj.externalId) ? 'externalId'
+                : (present(obj.code) ? 'code' : null));
+            const value = keep ? obj[keep] : null;
+            REF_KEYS.forEach(k => { delete obj[k]; });
+            if (keep) { obj[keep] = value; return true; }
+            return false; // no usable identifier
+        };
+
+        if (Array.isArray(node)) {
+            // Recurse; drop any array element that is a now-empty reference.
+            for (let i = node.length - 1; i >= 0; i--) {
+                const el = node[i];
+                if (isRefObject(el)) {
+                    if (!reduceRef(el)) node.splice(i, 1); // remove empty ref
+                } else {
+                    this._reduceIdentifierRefs(el);
+                }
+            }
+            return node;
+        }
+
+        if (node && typeof node === 'object') {
+            Object.keys(node).forEach(k => {
+                // UDF metas (udfMeta / meta) legitimately carry id + externalId;
+                // the "exactly one identifier" rule is for ENTITY references, not
+                // UDF metas. Leave them untouched.
+                if (k === 'udfMeta' || k === 'meta') return;
+                const child = node[k];
+                if (isRefObject(child)) {
+                    // Reduce; if no usable identifier remains, drop the whole key.
+                    if (!reduceRef(child)) delete node[k];
+                } else {
+                    this._reduceIdentifierRefs(child);
+                }
+            });
+        }
+        return node;
     }
 
     /**
