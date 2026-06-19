@@ -465,13 +465,17 @@ class FSMService {
         const padded = String(nextRevisionNumber).padStart(3, '0');
         const baseScCode = tree.code != null ? tree.code : originalCode;
         const revisionCode = `${baseScCode}-Rev-${padded}`;
-        const existingServiceCallId = await this._getServiceCallIdByCode(revisionCode);
+        // Suffix-proof existence check by revision UDFs (NOT bare code): FSM
+        // auto-suffixes duplicate SC codes, so a code match would never find the
+        // SC we just created and we'd create a new one every time.
+        const existingServiceCallId = await this._getServiceCallIdByRevision(originalCode, nextRevisionNumber);
 
         // Revision activity code = original activity code + same suffix
         // (e.g. '19846-Rev-003'). One activity per revision level; check if it
-        // already exists (attach smartforms to it) or must be created.
+        // already exists (attach smartforms to it) or must be created. Matched
+        // via its ServiceCall (object.objectId), which is suffix-proof.
         const activityCode = `${originalCode}-Rev-${padded}`;
-        const existingActivityId = await this._getActivityIdByCode(activityCode);
+        const existingActivityId = await this._getRevisionActivityId(originalActivityId, existingServiceCallId);
 
         // Header transform (id = existing SC id or null).
         this._transformRevisionHeader(tree, originalCode, nextRevisionNumber, existingServiceCallId);
@@ -643,12 +647,17 @@ class FSMService {
         // 1) PATCH/POST ServiceCall (create or append).
         const savedTree = await this._patchServiceCallCompositeTree(payload, existingServiceCallId);
 
-        // 2) Locate the revision activity by its assembled code; take its real id.
-        const savedActivities = Array.isArray(savedTree.activities) ? savedTree.activities : [];
-        const savedActivity = savedActivities.find(a => a && a.code === activityCode);
-        const newActivityId = savedActivity ? savedActivity.id : null;
+        // 2) Resolve the revision activity's real id.
+        //    Append case: we already know it (existingActivityId).
+        //    Create case: find it in the response by its assembled code.
+        let newActivityId = built.existingActivityId || null;
         if (!newActivityId) {
-            throw new Error(`Created revision activity (code ${activityCode}) not found in ServiceCall response.`);
+            const savedActivities = Array.isArray(savedTree.activities) ? savedTree.activities : [];
+            const savedActivity = savedActivities.find(a => a && a.code === activityCode);
+            newActivityId = savedActivity ? savedActivity.id : null;
+        }
+        if (!newActivityId) {
+            throw new Error(`Revision activity (code ${activityCode}) not found in ServiceCall response.`);
         }
 
         // 2b) composite-tree create does NOT persist previousActivity on a new
@@ -659,7 +668,7 @@ class FSMService {
             const linkPayload = {
                 previousActivity: originalActivityId,
                 udfValues: [
-                    { udfMeta: { externalId: 'Z_Activity_Type' }, value: '-7' }
+                    { meta: { externalId: 'Z_Activity_Type' }, value: '-7' }
                 ]
             };
             await this._patchActivity(newActivityId, linkPayload);
@@ -1086,9 +1095,13 @@ class FSMService {
      * @returns {Promise<string|null>} existing SC id, or null if none
      * @private
      */
-    async _getServiceCallIdByCode(code) {
-        if (!code) return null;
-        const query = `SELECT w.id FROM ServiceCall w WHERE w.code = '${code}'`;
+    async _getServiceCallIdByRevision(originalCode, n) {
+        if (!originalCode || n == null) return null;
+        // Match by the revision UDFs, NOT the code: FSM auto-suffixes duplicate
+        // ServiceCall codes (e.g. '8200002124-Rev-004-7'), so a bare-code match
+        // would never find the SC it just created and would create a new one
+        // every time. The UDFs are stable regardless of the stored code.
+        const query = `SELECT w.id, w.udf.Z_RevisionOfActivity, w.udf.Z_revisionNumber FROM ServiceCall w WHERE w.udf.Z_RevisionOfActivity = '${originalCode}' AND w.udf.Z_revisionNumber = '${n}'`;
         const data = await this.makeQueryRequest(query, 'ServiceCall.27');
         if (!data.data || data.data.length === 0) return null;
         const w = data.data[0].w;
@@ -1096,15 +1109,20 @@ class FSMService {
     }
 
     /**
-     * Look up an Activity id by its code. Used to decide whether a revision
-     * activity already exists (attach smartforms to it) or must be created.
-     * @param {string} code - e.g. '19846-Rev-002'
+     * Look up the revision Activity for a given level. One activity per revision
+     * level; if it exists we attach the new smartform to it (append), otherwise
+     * it is created. Matched via its ServiceCall (suffix-proof): the activity's
+     * object.objectId points at the level-N ServiceCall.
+     * @param {string} originalActivityId - the original activity id
+     * @param {string} serviceCallId - the level-N ServiceCall id (or null)
      * @returns {Promise<string|null>} existing activity id, or null if none
      * @private
      */
-    async _getActivityIdByCode(code) {
-        if (!code) return null;
-        const query = `SELECT w.id FROM Activity w WHERE w.code = '${code}'`;
+    async _getRevisionActivityId(originalActivityId, serviceCallId) {
+        if (!originalActivityId || !serviceCallId) return null;
+        // The revision activity links to its ServiceCall via object.objectId, is
+        // a '-7' revision, and points back to the original via previousActivity.
+        const query = `SELECT w.id, w.object.objectId FROM Activity w WHERE w.previousActivity = '${originalActivityId}' AND w.udf.Z_Activity_Type = '-7' AND w.object.objectId = '${serviceCallId}'`;
         const data = await this.makeQueryRequest(query, 'Activity.43');
         if (!data.data || data.data.length === 0) return null;
         const w = data.data[0].w;
