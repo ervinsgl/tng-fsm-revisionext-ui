@@ -1,4 +1,4 @@
-# T&M Journal — Change Workflow (BAS → DevOps → DEV → QA → PROD)
+# RevisionExt — Change Workflow (BAS → DevOps → DEV → QA → PROD)
 
 How to take a change from idea to running in each environment, safely.
 
@@ -6,10 +6,10 @@ How to take a change from idea to running in each environment, safely.
 
 ## The pieces you work with
 
-- **BAS workspace** = a clone of the Azure DevOps repo (`tns.fsm.timematerial.ui`, in BAS-Git).
+- **BAS workspace** = a clone of the Azure DevOps repo (`tns.fsm.revisionext.ui`, in BAS-Git).
   This is where you edit, and what you commit. **The repo is the source of truth** — the
   pipeline builds and deploys from it, not from your local files.
-- **Sandbox CF app** (`tns-fsm-timematerialext-ui-sandbox`) = your private running instance for
+- **Sandbox CF app** (`tns-fsm-revisionext-ui-sandbox`) = your private running instance for
   testing, deployed by hand with `cf push`. Its deploy descriptors use `-sandbox` names and are
   **local only — never committed.**
 - **Pipeline** = builds the `.mtar` and deploys. You don't run build/deploy by hand for the
@@ -30,14 +30,14 @@ git checkout -b feature/<short-name>
 ```
 
 ### 2. Make the code change in BAS
-Edit the code files (`routes/`, `utils/`, `webapp/`, `index.js`, etc.).
+Edit the code files (`utils/`, `webapp/`, `index.js`, etc.).
 
 ### 3. (Recommended) Test it in your sandbox first
 Deploy the current code to the sandbox app and check it from FSM:
 ```
 cf push -f <sandbox-manifest>     # or your in-place sandbox manifest
 ```
-Launch the sandbox from its own FSM registration (Mobile + Web UI) and confirm the change works.
+Launch the sandbox from its own FSM Web UI Shell registration and confirm the change works.
 This is what the sandbox is for — prove it before it enters the official flow.
 
 ### 4. Stage ONLY the files you meant to change
@@ -67,7 +67,7 @@ git push
 
 ### 7. Open a Pull Request into `develop`
 - **Into:** `develop` (never `main` for a feature branch).
-- **Reviewers:** Pieper, Böhme, Schrader.
+- **Reviewers:** [fill in this app's reviewers].
 - **Description:** what changed and why (one or two lines is enough).
 
 ### 8. Pipeline runs on the PR
@@ -85,15 +85,16 @@ QA (then PROD) is released through cTMS / Cloud ALM, not straight from Git.
 
 ## Part B — Guardrails (the things that actually bite)
 
-- **Code only across the sandbox/repo boundary.** Move `routes/`, `utils/`, `webapp/`, `index.js`,
+- **Code only across the sandbox/repo boundary.** Move `utils/`, `webapp/`, `index.js`,
   etc. Never carry `-sandbox` `manifest.yaml` / `mta.yaml` into the repo.
 - **Run `git diff --cached | grep -i sandbox` before every push.** Zero hits expected.
-- **Never commit secrets.** No real `FSM_WEBCONTAINER_AUTH_KEY`, no clientSecret, no
-  `secrets.mtaext`. The `.gitignore` covers these — keep it that way.
-- **Keep the three destination references consistent** when you touch the destination name:
-  - `manifest.yaml` / `mta.yaml` → service **instance** name (`fsm-timematerialext-destination`)
-  - `FSMService.js` → destination **entry** name (`this.destinationName = 'FSM_OAUTH_CONNECT'`)
-  - The entry Dennis configures in the cockpit must also be `FSM_OAUTH_CONNECT`.
+- **Never commit secrets.** No clientSecret, no `secrets.mtaext`. The `.gitignore`
+  covers these — keep it that way. (Note: this app does not use a
+  `FSM_WEBCONTAINER_AUTH_KEY` — see Part C.)
+- **Keep the destination references consistent** when you touch the destination name:
+  - `manifest.yaml` / `mta.yaml` → service **instance** name (`fsm-revisionext-destination`)
+  - `utils/fsmConstants.js` → destination **config** name (`DESTINATION_NAME = 'FSM_OAUTH_CONNECT'`)
+  - The destination entry configured in the cockpit must also be `FSM_OAUTH_CONNECT`.
 - **Don't reinstall npm on the corporate network** unless needed — it can hit the proxy
   corruption. The committed `package-lock.json` is the trusted one; build happens in the pipeline
   (clean network).
@@ -104,16 +105,20 @@ QA (then PROD) is released through cTMS / Cloud ALM, not straight from Git.
 
 These are not solved by a PR. They must exist in each space/subaccount:
 
-1. **Destination service _instance_** `fsm-timematerialext-destination` — **before deploy**
-   (missing = the 404 deploy error).
+1. **Destination service _instance_** `fsm-revisionext-destination` — **before deploy**
+   (missing = the bind/404 deploy error).
 2. **Destination _entry_** `FSM_OAUTH_CONNECT` configured with URL + credentials; **clientSecret
    pasted after import** (it isn't carried over) — before the app calls FSM.
-3. **Env var** `FSM_WEBCONTAINER_AUTH_KEY` (mandatory — app exits on startup without it) — set on
-   the app **after deploy**. Each environment gets its **own** key.
-4. **Env var** `FSM_JWKS_URL` — optional; defaults to the DE-region URL in code, set only to
-   override for another region.
-5. **Read the deployed route** (`cf app <name>` or cockpit) and **register it in that
-   environment's FSM** (Mobile + Web UI) — after deploy.
+3. **Env var** `FSM_JWKS_URL` — optional; defaults to the DE-region URL in code, set only to
+   override for another region. (Currently set explicitly to the DE URL.)
+4. **Read the deployed route** (`cf app <name>` or cockpit) and **register it as the FSM
+   Web UI Shell extension** for that environment — after deploy. (This app is Web-UI-only;
+   there is no Mobile Web Container registration.)
+
+> **Note:** This app does **not** use `FSM_WEBCONTAINER_AUTH_KEY`. The Mobile
+> Authentication-Key tier is not implemented (see `SECURITY.md`), and the app does
+> **not** exit on startup if it is unset. Web UI auth is handled by FSM JWT
+> verification + a session token — no per-environment auth-key secret to set.
 
 ---
 
@@ -121,10 +126,10 @@ These are not solved by a PR. They must exist in each space/subaccount:
 
 | Thing | Where |
 |---|---|
-| Source of truth | Azure DevOps repo (`tns.fsm.timematerial.ui`) |
+| Source of truth | Azure DevOps repo (`tns.fsm.revisionext.ui`) |
 | Your editor | BAS (workspace = repo clone) |
 | Your test instance | sandbox CF app (`cf push`, local descriptors) |
 | Build + deploy | pipeline (DEV) / cTMS + Cloud ALM (QA, PROD) |
-| `FSM_WEBCONTAINER_AUTH_KEY` read | `index.js` (mandatory; app exits if missing) |
-| `FSM_JWKS_URL` read | `FSMJwtValidator.js` (optional; DE default) |
-| Destination entry name | `FSMService.js` → `this.destinationName` |
+| Web UI session init | `index.js` → `/api/v1/shell-session-init` (verifies FSM JWT, issues session token) |
+| `FSM_JWKS_URL` read | `utils/FSMJwtValidator.js` (optional; DE default) |
+| Destination config name | `utils/fsmConstants.js` → `DESTINATION_NAME` (`FSM_OAUTH_CONNECT`) |

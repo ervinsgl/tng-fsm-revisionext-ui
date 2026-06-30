@@ -1,11 +1,11 @@
-# Naming Conventions for tns FSM Extensions
+# Naming Conventions for TNS FSM Extensions
 
-> **Scope:** This document applies to all SAP BTP extensions for FSM in the tns estate.
+> **Scope:** This document applies to all SAP BTP extensions for FSM in the TNS estate.
 > All future apps in this portfolio should follow these conventions from initial setup.
 > 
 > **Status:** Active.
 > **Owner:** [Team or person responsible — fill in]
-> **Last updated:** April 2026 (initial version)
+> **Last updated:** June 2026 (TNG→TNS estate rename; recorded the sandbox+mtar env-suffix deviation)
 
 ## Purpose
 
@@ -89,6 +89,15 @@ environments — it's the namespace, not the deployment.
 App ID `com.tns.fsm.equipmentlist.app` stays the same in dev, test, and prod —
 the namespace is environment-agnostic. Only the deployment-side identifiers vary.
 
+> **Approved deviation (sandbox + mtar split):** Some apps — e.g. Revision
+> Extension — deploy via the sandbox + mtar model (`SANDBOX_MTAR_MIGRATION.md`)
+> rather than the `<env>`-suffixed scheme above. Under that model the environment
+> is determined by **which subaccount** the mtar lands in (separate spaces/domains
+> per env), so the CF app name omits `<env>` (`tns-fsm-<capability>-ui`) and the
+> destination service is a single unsuffixed `fsm-<capability>-destination` reused
+> in every subaccount. A local `-sandbox` app/route variant exists for hand
+> `cf push` testing and is never committed. This deviation is approved per §12.
+
 ---
 
 ## Why these specific patterns
@@ -135,7 +144,7 @@ The folder name matches the GitHub repo name and the `package.json` name field.
 `xs-security.json#xsappname` is the SAP authorization service identifier. By
 matching it to the UI5 App ID, both the security configuration and the namespace
 identify the same logical app. Convention makes it easier to reason about
-"is this a tns FSM extension and which one."
+"is this a TNS FSM extension and which one."
 
 ---
 
@@ -232,8 +241,16 @@ The "Last updated" line at the top of this document MUST be kept current.
 
 ## Appendix: Existing apps following this convention
 
-| App | App ID | CF app (dev) | Folder |
-|---|---|---|---|
-| Revision Extension | `com.tns.fsm.revisionext.app` | `tns-fsm-revisionext-ui-dev` | `tns-fsm-revisionext-ui` |
+| App | App ID | CF app (DevOps) | CF app (sandbox) | Destination | Folder |
+|---|---|---|---|---|---|
+| Revision Extension | `com.tns.fsm.revisionext.app` | `tns-fsm-revisionext-ui` | `tns-fsm-revisionext-ui-sandbox` | `fsm-revisionext-destination` | `tns-fsm-revisionext-ui` |
+
+> **Note on the env suffix:** Revision Extension follows the **sandbox + mtar
+> deployment split** (see `SANDBOX_MTAR_MIGRATION.md`), an approved deviation from
+> the `<env>`-suffixed convention below. The DevOps app name omits `<env>` (the
+> environment is encoded by which subaccount the mtar lands in), and the
+> destination service is a single unsuffixed `fsm-revisionext-destination` reused
+> across environments. A local `-sandbox` variant exists for hand-`cf push`
+> testing and is never committed.
 
 This list will grow as more apps are added.
