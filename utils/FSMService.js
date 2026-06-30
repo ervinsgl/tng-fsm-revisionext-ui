@@ -811,10 +811,34 @@ class FSMService {
         const n = nextRevisionNumber;
         const base = (baseUrl || '').replace(/\/+$/, '');
         const link = `${base}/shell/#/planning-dispatching/activities/view/<NEW_ACTIVITY_UUID>/details?selectedCompanyId=${companyId}`;
-        const newLine = `\n${originalCode} Rev-${n} - Rev-Nr. ${n}: ${link}`;
+        // Label format: "<code> Rev-<N>: <link>"
+        const newLine = `${originalCode} Rev-${n}: ${link}`;
 
-        const prior = (existingValue != null && String(existingValue).trim() !== '') ? String(existingValue) : '';
-        const value = prior + newLine;
+        // Start from the existing value, split into lines, and DROP any line that
+        // already refers to this same revision number for this original. This
+        // prevents duplicate Rev-<N> entries accumulating across repeated creates
+        // (e.g. a second smartform reaching the same revision level). Matches both
+        // the new format ("<code> Rev-<N>:") and the older format
+        // ("<code> Rev-<N> - Rev-Nr. <N>:"), with or without a bracketed suffix.
+        const prior = (existingValue != null) ? String(existingValue) : '';
+        const revPrefix = `${originalCode} Rev-${n}`;
+        const keptLines = prior
+            .split('\n')
+            .filter(line => {
+                const trimmed = line.trim();
+                if (trimmed === '') return false; // drop blank lines
+                // Drop any prior line for this same original + revision number.
+                // The prefix must be followed by a non-digit (':', ' ', '[', '-')
+                // so "Rev-3" does NOT match "Rev-30".
+                if (trimmed.startsWith(revPrefix)) {
+                    const nextChar = trimmed.charAt(revPrefix.length);
+                    if (nextChar === '' || !/[0-9]/.test(nextChar)) return false;
+                }
+                return true;
+            });
+
+        keptLines.push(newLine);
+        const value = '\n' + keptLines.join('\n');
 
         return {
             udfValues: [
@@ -874,7 +898,7 @@ class FSMService {
      * @private
      */
     async _getChecklistInstances(objectId) {
-        const query = `SELECT w.id, w.template, w.description, w.closed, w.udf.Z_PreviousChecklist, w.udf.Z_PruefberichtNr FROM ChecklistInstance w WHERE w.object.objectId = '${objectId}'`;
+        const query = `SELECT w.id, w.template, w.description, w.closed, w.lastChanged, w.udf.Z_PreviousChecklist, w.udf.Z_PruefberichtNr FROM ChecklistInstance w WHERE w.object.objectId = '${objectId}'`;
         const data = await this.makeQueryRequest(query, 'ChecklistInstance.20');
 
         if (!data.data || data.data.length === 0) return [];
@@ -891,6 +915,8 @@ class FSMService {
                 template: w.template || null,
                 // Open/closed status (now that open smartforms are shown too).
                 closed: w.closed === true,
+                // Epoch-millis last-changed; used to sort tables newest-first.
+                lastChanged: w.lastChanged != null ? Number(w.lastChanged) : 0,
                 // Z_PreviousChecklist links a smartform to its predecessor;
                 // when it equals own id, the smartform is an original (root).
                 // Selecting w.udf.Z_PreviousChecklist explicitly makes FSM return
@@ -1408,6 +1434,7 @@ class FSMService {
                     smartformName: root.name || '',
                     smartformDescription: root.rawDescription || root.description || '',
                     rootPruefberichtNr: root.pruefberichtNr || null,
+                    rootLastChanged: root.lastChanged || 0,
                     rows: rows
                 };
             });
@@ -1450,6 +1477,9 @@ class FSMService {
                     row.attachmentDescription = att.description || '';
                 }
             }));
+
+            // Sort tables by their root smartform's lastChanged, newest first.
+            tables.sort((a, b) => (b.rootLastChanged || 0) - (a.rootLastChanged || 0));
 
             return { activities, tables, originalServiceCallId, originalActivityId, originalCode };
         } catch (error) {

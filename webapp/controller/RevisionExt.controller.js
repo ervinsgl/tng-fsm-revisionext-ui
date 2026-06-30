@@ -70,8 +70,15 @@ sap.ui.define([
                 const activities = result.activities || [];
                 const tables = result.tables || [];
 
+                // Per-table UI state: collapsed by default, visible (for search).
+                tables.forEach(t => {
+                    t.expanded = false;
+                    t.visible = true;
+                });
+
                 oModel.setProperty("/activities", activities);
                 oModel.setProperty("/tables", tables);
+                oModel.setProperty("/allExpanded", false);
                 oModel.setProperty("/originalServiceCallId", result.originalServiceCallId || null);
                 oModel.setProperty("/originalActivityId", result.originalActivityId || null);
                 oModel.setProperty("/originalCode", result.originalCode || null);
@@ -183,6 +190,41 @@ sap.ui.define([
             } finally {
                 oModel.setProperty("/busy", false);
             }
+        },
+
+        /**
+         * Filter the smartform tables by description (case-insensitive substring).
+         * Toggles each table's `visible` flag; empty query shows all.
+         * @param {sap.ui.base.Event} oEvent
+         */
+        onSearchTables(oEvent) {
+            const oModel = this.getView().getModel("view");
+            const sQuery = (oEvent.getParameter("newValue") || oEvent.getParameter("query") || "").trim().toLowerCase();
+            const aTables = oModel.getProperty("/tables") || [];
+
+            aTables.forEach(t => {
+                const desc = (t.smartformDescription || "").toLowerCase();
+                const name = (t.smartformName || "").toLowerCase();
+                t.visible = !sQuery || desc.indexOf(sQuery) !== -1 || name.indexOf(sQuery) !== -1;
+            });
+
+            oModel.setProperty("/tables", aTables);
+            oModel.refresh(true);
+        },
+
+        /**
+         * Expand or collapse all smartform tables at once.
+         */
+        onToggleExpandAll() {
+            const oModel = this.getView().getModel("view");
+            const bExpand = !oModel.getProperty("/allExpanded");
+            const aTables = oModel.getProperty("/tables") || [];
+
+            aTables.forEach(t => { t.expanded = bExpand; });
+
+            oModel.setProperty("/tables", aTables);
+            oModel.setProperty("/allExpanded", bExpand);
+            oModel.refresh(true);
         }
 
     });

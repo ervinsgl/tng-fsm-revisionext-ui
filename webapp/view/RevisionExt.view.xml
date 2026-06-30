@@ -44,56 +44,19 @@
                 width="100%"
                 class="sapUiContentPadding">
 
-                <Panel
-                    headerText="Session Context"
-                    expandable="true"
-                    expanded="false"
-                    class="sapUiResponsiveMargin"
-                    width="auto">
-
-                    <List
-                        id="contextList"
-                        mode="None"
-                        showSeparators="Inner">
-
-                        <ObjectListItem
-                            title="{view>/context/userName}"
-                            intro="User"
-                            icon="sap-icon://account" />
-
-                        <ObjectListItem
-                            title="{view>/context/companyName}"
-                            intro="Company"
-                            icon="sap-icon://factory" />
-
-                        <ObjectListItem
-                            title="{view>/context/cloudAccount}"
-                            intro="Cloud Account"
-                            icon="sap-icon://cloud" />
-
-                        <ObjectListItem
-                            title="{view>/context/cloudId}"
-                            intro="Cloud ID / Object ID"
-                            icon="sap-icon://key-user-settings" />
-
-                        <ObjectListItem
-                            title="{view>/context/objectType}"
-                            intro="Object Type"
-                            icon="sap-icon://activity-2" />
-
-                        <ObjectListItem
-                            title="{view>/context/language}"
-                            intro="Language"
-                            icon="sap-icon://globe" />
-
-                        <ObjectListItem
-                            title="{view>/context/dataCloudFullQualifiedDomainName}"
-                            intro="FSM Cloud Domain"
-                            icon="sap-icon://world" />
-
-                    </List>
-
-                </Panel>
+                <!-- Toolbar: filter tables by description + expand/collapse all -->
+                <Toolbar class="sapUiSmallMarginTop">
+                    <SearchField
+                        width="20rem"
+                        placeholder="Search smartforms..."
+                        liveChange=".onSearchTables"
+                        search=".onSearchTables" />
+                    <ToolbarSpacer />
+                    <Button
+                        text="{= ${view>/allExpanded} ? 'Collapse all' : 'Expand all' }"
+                        icon="{= ${view>/allExpanded} ? 'sap-icon://collapse-all' : 'sap-icon://expand-all' }"
+                        press=".onToggleExpandAll" />
+                </Toolbar>
 
                 <!-- One small table per original-activity smartform (root).
                      Rows = activity lineage; each row carries the smartform
@@ -108,7 +71,8 @@
 
                     <Panel
                         expandable="true"
-                        expanded="false"
+                        expanded="{view>expanded}"
+                        visible="{view>visible}"
                         class="sapUiResponsiveMargin"
                         width="auto">
 
@@ -132,7 +96,6 @@
                                 <columns>
                                     <Column width="7rem"><header><Text text="Revision" /></header></Column>
                                     <Column width="6rem"><header><Text text="Code" /></header></Column>
-                                    <Column><header><Text text="Activity ID" /></header></Column>
                                     <Column><header><Text text="Smartform Description" /></header></Column>
                                     <Column><header><Text text="Smartform Name" /></header></Column>
                                     <Column><header><Text text="Attachment Name" /></header></Column>
@@ -148,7 +111,6 @@
                                                 state="{= ${view>isOriginal} ? 'Information' : 'None' }"
                                                 inverted="{view>isOriginal}" />
                                             <Text text="{view>code}" />
-                                            <Text text="{view>id}" />
                                             <Text text="{view>smartformDescription}" />
                                             <Text text="{view>smartformName}" />
                                             <Text text="{view>attachmentName}" />
