@@ -1,4 +1,4 @@
-# Rename Guide — Renaming an Existing TNG FSM Extension
+# Rename Guide — Renaming an Existing tns FSM Extension
 
 > **Audience:** A developer renaming an existing FSM extension to comply with
 > the [NAMING.md](NAMING.md) conventions. This applies to apps that were
@@ -11,7 +11,7 @@
 > **Last updated:** April 2026
 
 This guide is the procedure used to rename `mobileappwebcontainer` to
-`com.tng.fsm.revisionext.app` in April 2026. It's designed to be reusable
+`com.tns.fsm.revisionext.app` in April 2026. It's designed to be reusable
 for future renames.
 
 For the target naming patterns, see [NAMING.md](NAMING.md).
@@ -71,19 +71,19 @@ cf push   # redeploys the working version
 ## Naming targets
 
 Before starting, decide the target names. This guide uses the rename of
-`mobileappwebcontainer` → `com.tng.fsm.revisionext.app` as the worked example.
+`mobileappwebcontainer` → `com.tns.fsm.revisionext.app` as the worked example.
 
 Fill in your own values:
 
 | Aspect | Old | New |
 |---|---|---|
-| App ID | `mobileappwebcontainer` | `com.tng.fsm.<capability>.app` |
-| CF app name | `mobileappwebcontainer` | `tng-fsm-<capability>-ui-<env>` |
+| App ID | `mobileappwebcontainer` | `com.tns.fsm.<capability>.app` |
+| CF app name | `mobileappwebcontainer` | `tns-fsm-<capability>-ui-<env>` |
 | Service binding | `mobileappwebcontainer-destination` | `fsm-<capability>-destination-<env>` |
 | Controller file | `View1.controller.js` | `<Capability>.controller.js` |
 | View file | `View1.view.xml` | `<Capability>.view.xml` |
-| GitHub repo (optional) | varies | `tng-fsm-<capability>-ui` |
-| Local folder (optional) | varies | `tng-fsm-<capability>-ui` |
+| GitHub repo (optional) | varies | `tns-fsm-<capability>-ui` |
+| Local folder (optional) | varies | `tns-fsm-<capability>-ui` |
 
 Substitute these throughout the guide.
 
@@ -271,7 +271,7 @@ git push
 
 | File | Change |
 |---|---|
-| `manifest.yaml` `applications[].name` | `mobileappwebcontainer` → `tng-fsm-<capability>-ui-<env>` |
+| `manifest.yaml` `applications[].name` | `mobileappwebcontainer` → `tns-fsm-<capability>-ui-<env>` |
 | `manifest.yaml` `routes[].route` | New URL pattern |
 | `package.json` `undeploy` script | `cf undeploy mobileappwebcontainer` → `cf undeploy <new-name>` |
 
@@ -285,7 +285,7 @@ git push
 
 In FSM Admin → Companies → [Your Company] → Web Containers → [Web Container Name]:
 
-Update the **URL field** to the new URL: `https://tng-fsm-<capability>-ui-<env>-<orgslug>.cfapps.<region>.hana.ondemand.com`
+Update the **URL field** to the new URL: `https://tns-fsm-<capability>-ui-<env>-<orgslug>.cfapps.<region>.hana.ondemand.com`
 
 (The exact orgslug and region depend on your CF setup. Check `cf app
 <old-name>` to see the current URL pattern, then construct the new one by
@@ -300,7 +300,7 @@ Edit `manifest.yaml`:
 
 ```yaml
 applications:
-  - name: tng-fsm-<capability>-ui-<env>   # was: mobileappwebcontainer
+  - name: tns-fsm-<capability>-ui-<env>   # was: mobileappwebcontainer
     memory: 512M
     disk_quota: 512M
     instances: 1
@@ -309,7 +309,7 @@ applications:
     command: npm start
     path: .
     routes:
-      - route: tng-fsm-<capability>-ui-<env>-<orgslug>.cfapps.<region>.hana.ondemand.com
+      - route: tns-fsm-<capability>-ui-<env>-<orgslug>.cfapps.<region>.hana.ondemand.com
     services:
       - fsm-<capability>-destination-<env>
 ```
@@ -317,7 +317,7 @@ applications:
 Edit `package.json`:
 
 ```json
-"undeploy": "cf undeploy tng-fsm-<capability>-ui-<env> --delete-services --delete-service-keys --delete-service-brokers"
+"undeploy": "cf undeploy tns-fsm-<capability>-ui-<env> --delete-services --delete-service-keys --delete-service-brokers"
 ```
 
 ### Push (creates a new CF app)
@@ -336,17 +336,17 @@ Restore env vars on the new app (they don't migrate from the old one):
 cf env mobileappwebcontainer | grep -E "FSM_WEBCONTAINER_AUTH_KEY|FSM_JWKS_URL"
 
 # Set them on the new app
-cf set-env tng-fsm-<capability>-ui-<env> FSM_WEBCONTAINER_AUTH_KEY '<value>'
-cf set-env tng-fsm-<capability>-ui-<env> FSM_JWKS_URL '<value-if-set>'
+cf set-env tns-fsm-<capability>-ui-<env> FSM_WEBCONTAINER_AUTH_KEY '<value>'
+cf set-env tns-fsm-<capability>-ui-<env> FSM_JWKS_URL '<value-if-set>'
 
 # Restage to pick up the env vars
-cf restage tng-fsm-<capability>-ui-<env>
+cf restage tns-fsm-<capability>-ui-<env>
 ```
 
 ### Verify
 
 ```bash
-cf logs tng-fsm-<capability>-ui-<env> --recent | grep -E "Server running|API mounted|FSM_WEBCONTAINER"
+cf logs tns-fsm-<capability>-ui-<env> --recent | grep -E "Server running|API mounted|FSM_WEBCONTAINER"
 ```
 
 Both the old and new app should now be running. Test FSM Mobile (which now
@@ -366,7 +366,7 @@ cf delete mobileappwebcontainer -f
 
 ```bash
 git add -A
-git commit -m "Phase 3: rename CF app to tng-fsm-<capability>-ui-<env>"
+git commit -m "Phase 3: rename CF app to tns-fsm-<capability>-ui-<env>"
 git push
 ```
 
@@ -381,9 +381,9 @@ syntactic forms.
 
 | Form | Where | Replacement |
 |---|---|---|
-| Slashed: `<old>/...` | UI5 module paths in `sap.ui.define` | `com/tng/fsm/<capability>/app/...` |
-| Dotted: `<old>.X` | Class declarations, namespace references | `com.tng.fsm.<capability>.app.X` |
-| Bare: `"<old>"` | JSON values in manifest, xs-security, etc. | `"com.tng.fsm.<capability>.app"` |
+| Slashed: `<old>/...` | UI5 module paths in `sap.ui.define` | `com/tns/fsm/<capability>/app/...` |
+| Dotted: `<old>.X` | Class declarations, namespace references | `com.tns.fsm.<capability>.app.X` |
+| Bare: `"<old>"` | JSON values in manifest, xs-security, etc. | `"com.tns.fsm.<capability>.app"` |
 
 ### Inventory first
 
@@ -405,7 +405,7 @@ find . -type f \( -name "*.js" -o -name "*.xml" -o -name "*.json" \) \
     -not -path "./dist/*" \
     -not -path "./resources/*" \
     -not -path "./.git/*" \
-    -exec sed -i 's|<old-app-id>/|com/tng/fsm/<capability>/app/|g' {} +
+    -exec sed -i 's|<old-app-id>/|com/tns/fsm/<capability>/app/|g' {} +
 ```
 
 **Dotted form:**
@@ -416,7 +416,7 @@ find . -type f \( -name "*.js" -o -name "*.xml" -o -name "*.json" \) \
     -not -path "./dist/*" \
     -not -path "./resources/*" \
     -not -path "./.git/*" \
-    -exec sed -i 's|<old-app-id>\.|com.tng.fsm.<capability>.app.|g' {} +
+    -exec sed -i 's|<old-app-id>\.|com.tns.fsm.<capability>.app.|g' {} +
 ```
 
 The `\.` matches a literal dot. Without escaping, `sed` would also match
@@ -429,30 +429,30 @@ similar-looking strings):
 
 **`webapp/manifest.json`:**
 ```json
-"id": "<old-app-id>",      → "id": "com.tng.fsm.<capability>.app",
-"service": "<old-app-id>"  → "service": "com.tng.fsm.<capability>.app"
+"id": "<old-app-id>",      → "id": "com.tns.fsm.<capability>.app",
+"service": "<old-app-id>"  → "service": "com.tns.fsm.<capability>.app"
 ```
 
 **`xs-security.json`:**
 ```json
-"xsappname": "<old-app-id>",  → "xsappname": "com.tng.fsm.<capability>.app",
+"xsappname": "<old-app-id>",  → "xsappname": "com.tns.fsm.<capability>.app",
 ```
 
 **`ui5.yaml`, `ui5-local.yaml`, `ui5-deploy.yaml`:**
 ```yaml
 metadata:
-  name: <old-app-id>           → name: com.tng.fsm.<capability>.app
+  name: <old-app-id>           → name: com.tns.fsm.<capability>.app
 ```
 
 **`ui5-deploy.yaml`** (also has `archiveName`):
 ```yaml
-archiveName: <old-app-id>      → archiveName: com.tng.fsm.<capability>.app
+archiveName: <old-app-id>      → archiveName: com.tns.fsm.<capability>.app
 ```
 
 **`package.json`** (npm names can't have dots — use the hyphenated form
 matching the folder/repo):
 ```json
-"name": "<old-app-id>"         → "name": "tng-fsm-<capability>-ui"
+"name": "<old-app-id>"         → "name": "tns-fsm-<capability>-ui"
 ```
 
 **`webapp/index.html`** (CRITICAL — easy to miss):
@@ -462,18 +462,18 @@ patterns:
 
 ```html
 data-sap-ui-resourceroots='{
-    "<old-app-id>": "./"          → "com.tng.fsm.<capability>.app": "./"
+    "<old-app-id>": "./"          → "com.tns.fsm.<capability>.app": "./"
 }'
 ```
 
 ```html
-data-name="<old-app-id>"          → data-name="com.tng.fsm.<capability>.app"
+data-name="<old-app-id>"          → data-name="com.tns.fsm.<capability>.app"
 ```
 
 Or in JS within the HTML:
 ```javascript
 new sap.ui.core.ComponentContainer({
-    name: "<old-app-id>"          → name: "com.tng.fsm.<capability>.app"
+    name: "<old-app-id>"          → name: "com.tns.fsm.<capability>.app"
 })
 ```
 
@@ -501,7 +501,7 @@ grep -rn '"container-<old-app-id>"' --include="*.js" 2>/dev/null \
 If any are found, replace:
 
 ```bash
-sed -i 's|"container-<old-app-id>"|"container-com.tng.fsm.<capability>.app"|g' \
+sed -i 's|"container-<old-app-id>"|"container-com.tns.fsm.<capability>.app"|g' \
     <each-file-from-above>
 ```
 
@@ -518,7 +518,7 @@ Update these to reference the new CF app name (which was renamed in Phase 3,
 not the App ID). For this app's case:
 
 ```bash
-sed -i 's|cf set-env <old-app-id>|cf set-env tng-fsm-<capability>-ui-<env>|g' index.js
+sed -i 's|cf set-env <old-app-id>|cf set-env tns-fsm-<capability>-ui-<env>|g' index.js
 ```
 
 ### Optional: delete `mta.yaml`
@@ -561,7 +561,7 @@ npm run build:cf
 
 The build output should reference the new App ID:
 ```
-ProjectBuilder Preparing build for project com.tng.fsm.<capability>.app
+ProjectBuilder Preparing build for project com.tns.fsm.<capability>.app
 ```
 
 If the build complains about unresolved modules, you missed a reference.
@@ -614,7 +614,7 @@ Watch for ANY browser console errors. Trace each one back to a missed reference.
 
 ```bash
 git add -A
-git commit -m "Phase 4: rename App ID from <old-app-id> to com.tng.fsm.<capability>.app"
+git commit -m "Phase 4: rename App ID from <old-app-id> to com.tns.fsm.<capability>.app"
 git push
 ```
 
@@ -631,7 +631,7 @@ Close your IDE / BAS. Then:
 
 ```bash
 cd ~/projects   # or wherever the project lives
-mv <old-folder> tng-fsm-<capability>-ui
+mv <old-folder> tns-fsm-<capability>-ui
 ```
 
 Re-open in your IDE at the new path. Update any IDE-specific config
@@ -674,7 +674,7 @@ Update FSM Admin URL back to the original, restore env vars, etc.
 
 ## Lessons learned (April 2026 rename)
 
-The April 2026 rename of `mobileappwebcontainer` → `com.tng.fsm.revisionext.app` ran
+The April 2026 rename of `mobileappwebcontainer` → `com.tns.fsm.revisionext.app` ran
 into these gotchas. They're addressed in the steps above but worth noting for
 future awareness:
 

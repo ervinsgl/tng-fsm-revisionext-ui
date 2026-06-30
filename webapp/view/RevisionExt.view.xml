@@ -1,5 +1,5 @@
 <mvc:View
-    controllerName="com.tng.fsm.revisionext.app.controller.RevisionExt"
+    controllerName="com.tns.fsm.revisionext.app.controller.RevisionExt"
     xmlns:mvc="sap.ui.core.mvc"
     xmlns="sap.m"
     xmlns:layout="sap.ui.layout"

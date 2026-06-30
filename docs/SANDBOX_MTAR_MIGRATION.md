@@ -52,6 +52,21 @@ its route.
 configured per-subaccount in cockpit. No `-dev`/`-qa`/`-prod` suffix. This keeps
 `manifest.yaml` and `mta.yaml` referencing an identical binding name.
 
+### Files that differ between sandbox and DevOps
+
+Three files have a sandbox variant that must **never** reach the DevOps repo (the
+`-sandbox` name/route, or the `(Sandbox)` extension name, would collide with the
+pipeline-owned app). Everything else is identical across both.
+
+| File | Sandbox (local-only, gitignored) | DevOps (committed) |
+|---|---|---|
+| `manifest.yaml` | app/route `tns-fsm-revisionext-ui-sandbox`, pinned route | app `tns-fsm-revisionext-ui`, `random-route: true` |
+| `mta.yaml` | ID/module `…-sandbox`, pinned route | ID `tns.fsm.revisionext.ui`, `default-route: true` |
+| `appconfig.json` | `name: "FSM Revision Extension (Sandbox)"` | `name: "FSM Revision Extension"` |
+
+Add the sandbox variants to `.gitignore`. The destination binding
+(`fsm-revisionext-destination`) is identical in all variants.
+
 ---
 
 ## Per-app values (RevisionExt)
@@ -223,6 +238,45 @@ Checklist:
 
 ---
 
+## Step 3b — `appconfig.json` (FSM extension registration)
+
+`appconfig.json` is the FSM-side extension descriptor (the name/icon FSM shows in
+its extension list). The only field that differs between sandbox and DevOps is
+`name` — the sandbox carries a `(Sandbox)` marker so the two registrations are
+never confused when both are present in FSM Admin.
+
+**Sandbox (`appconfig.json`, local-only):**
+
+```json
+{
+    "name": "FSM Revision Extension (Sandbox)",
+    "provider": "TUEV NORD",
+    "description": "FSM Revision extension for activity",
+    "version": "1.0.0",
+    "icon": "sap-icon://biometric-thumb"
+}
+```
+
+**DevOps (`appconfig.json`, committed to the repo):**
+
+```json
+{
+    "name": "FSM Revision Extension",
+    "provider": "TUEV NORD",
+    "description": "FSM Revision extension for activity",
+    "version": "1.0.0",
+    "icon": "sap-icon://biometric-thumb"
+}
+```
+
+Checklist:
+- [ ] Sandbox `name` carries the `(Sandbox)` marker; DevOps `name` does not.
+- [ ] `provider`, `description`, `version`, `icon` identical in both.
+- [ ] Like `manifest.yaml`, the **sandbox** `appconfig.json` is local-only — do not
+      let the `(Sandbox)` name reach the DevOps repo.
+
+---
+
 ## Step 4 — `package.json`
 
 Two things:
@@ -376,6 +430,9 @@ grep -n "fsm-.*-destination" manifest.yaml
 
 # App ID consistent
 grep -rn "com.tns.fsm.revisionext.app" manifest.json xs-security.json ui5*.yaml index.html Component.js | wc -l
+
+# appconfig name: sandbox carries (Sandbox); DevOps does not
+grep -n "\"name\"" appconfig.json
 ```
 
 All should come back consistent with the table in "Per-app values (RevisionExt)".

@@ -139,7 +139,7 @@ Mobile flow uses an HttpOnly cookie because:
 ### Why Web UI cannot use a cookie
 
 The FSM Web UI loads your app in an iframe. The iframe's domain
-(`com.tng.fsm.revisionext.app-fsm-dev-op.cfapps.eu10-004.hana.ondemand.com`) is different from
+(`com.tns.fsm.revisionext.app-fsm-dev-op.cfapps.eu10-004.hana.ondemand.com`) is different from
 the parent page's domain (`de.fsm.cloud.sap`). From the browser's perspective,
 the iframe is **third-party** content embedded in a first-party page.
 
@@ -205,8 +205,8 @@ is known only to FSM Mobile clients (transmitted internally during sync).
 **Rotation procedure (once implemented):**
 1. Update FSM Admin → Web Containers → Authentication Key field.
 2. Wait briefly for the change to propagate.
-3. `cf set-env tng-fsm-revisionext-ui-dev FSM_WEBCONTAINER_AUTH_KEY <new>` and
-   `cf restage tng-fsm-revisionext-ui-dev`.
+3. `cf set-env tns-fsm-revisionext-ui-dev FSM_WEBCONTAINER_AUTH_KEY <new>` and
+   `cf restage tns-fsm-revisionext-ui-dev`.
 4. Active Mobile WebContainer launches return 401 during the brief window
    between FSM update and CF restage; users retap to launch with the new key.
 
@@ -422,7 +422,7 @@ This decision should be revisited if any of the following change:
 
 | Setting | Where | Value |
 |---|---|---|
-| Authentication Key | FSM Admin → Companies → [Company] → Web Containers → [TUVNcom.tng.fsm.revisionext.appJournal] | Must byte-exactly match `FSM_WEBCONTAINER_AUTH_KEY` env var |
+| Authentication Key | FSM Admin → Companies → [Company] → Web Containers → [TUVNcom.tns.fsm.revisionext.appJournal] | Must byte-exactly match `FSM_WEBCONTAINER_AUTH_KEY` env var |
 
 ### In-memory state
 

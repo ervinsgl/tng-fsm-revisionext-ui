@@ -3,12 +3,12 @@ sap.ui.define([
     "sap/ui/model/json/JSONModel",
     "sap/m/MessageBox",
     "sap/base/i18n/Localization",
-    "com/tng/fsm/revisionext/app/utils/ContextService",
-    "com/tng/fsm/revisionext/app/utils/RevisionService"
+    "com/tns/fsm/revisionext/app/utils/ContextService",
+    "com/tns/fsm/revisionext/app/utils/RevisionService"
 ], (Controller, JSONModel, MessageBox, Localization, ContextService, RevisionService) => {
     "use strict";
 
-    return Controller.extend("com.tng.fsm.revisionext.app.controller.RevisionExt", {
+    return Controller.extend("com.tns.fsm.revisionext.app.controller.RevisionExt", {
 
         onInit() {
             this.getView().setModel(new JSONModel({

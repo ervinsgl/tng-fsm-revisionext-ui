@@ -1,4 +1,4 @@
-<mvc:View controllerName="com.tng.fsm.revisionext.app.controller.App"
+<mvc:View controllerName="com.tns.fsm.revisionext.app.controller.App"
     displayBlock="true"
     xmlns:mvc="sap.ui.core.mvc"
     xmlns="sap.m">

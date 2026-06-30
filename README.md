@@ -12,7 +12,7 @@ A SAP Fiori mobile application for SAP Field Service Management (FSM), designed 
 
 - [docs/SETUP.md](docs/SETUP.md) - fresh deployment to a new BTP subaccount
 - [docs/RENAME.md](docs/RENAME.md) - renaming an existing app to comply with naming conventions
-- [docs/NAMING.md](docs/NAMING.md) - naming convention reference for all tng FSM extensions
+- [docs/NAMING.md](docs/NAMING.md) - naming convention reference for all tns FSM extensions
 - [docs/SECURITY.md](docs/SECURITY.md) - security architecture and threat model (Phase 2 target)
 
 ---
@@ -274,7 +274,7 @@ as query params and the `X-Account-ID` / `X-Company-ID` / `X-Client-ID` /
 
 ```bash
 git clone <repository-url>
-cd tng-fsm-revisionext-ui
+cd tns-fsm-revisionext-ui
 npm install
 ```
 
@@ -305,7 +305,7 @@ the deployable `webapp` bundle the Express server serves statically.
 cf push
 ```
 
-The `manifest.yaml` defines the app (`tng-fsm-revisionext-ui-dev`), 512MB memory,
+The `manifest.yaml` defines the app (`tns-fsm-revisionext-ui-dev`), 512MB memory,
 the Node.js buildpack, `npm start` as the start command, the CF route, and binds the
 `fsm-revisionext-destination-dev` service.
 
@@ -315,10 +315,10 @@ the Node.js buildpack, `npm start` as the start command, the CF route, and binds
 ### 6. Get the Application URL
 
 ```bash
-cf app tng-fsm-revisionext-ui-dev
+cf app tns-fsm-revisionext-ui-dev
 ```
 
-Copy the route (e.g. `https://tng-fsm-revisionext-ui-dev-fsm-dev-op.cfapps.eu10-004.hana.ondemand.com`).
+Copy the route (e.g. `https://tns-fsm-revisionext-ui-dev-fsm-dev-op.cfapps.eu10-004.hana.ondemand.com`).
 This is the URL you configure in FSM Admin as the Web Container / Extension URL.
 
 ### Local Development
@@ -346,7 +346,7 @@ Navigate to: **FSM Admin → Company → Web Containers**
 |-------|-------|
 | **Name** | `Revisions` |
 | **External ID** | `Z_RevisionExt` |
-| **URL** | `https://tng-fsm-revisionext-ui-dev-xxx.cfapps.eu10-004.hana.ondemand.com` |
+| **URL** | `https://tns-fsm-revisionext-ui-dev-xxx.cfapps.eu10-004.hana.ondemand.com` |
 | **Object Types** | `Activity` |
 | **Active** | ✓ Checked |
 
@@ -392,7 +392,7 @@ Navigate to: **FSM Admin → Company → Extensions**
 |-------|-------|
 | **Name** | `Revisions` |
 | **External ID** | `Z_RevisionExt_Web` |
-| **URL** | `https://tng-fsm-revisionext-ui-dev-xxx.cfapps.eu10-004.hana.ondemand.com` |
+| **URL** | `https://tns-fsm-revisionext-ui-dev-xxx.cfapps.eu10-004.hana.ondemand.com` |
 | **Context** | `Activity` |
 | **Active** | ✓ Checked |
 
@@ -412,7 +412,7 @@ For local UI iteration, the app can run without an FSM session. `ContextService.
 falls back to a stored session or defaults when no Mobile/Shell context is present.
 
 ```
-https://tng-fsm-revisionext-ui-dev-xxx.cfapps.eu10-004.hana.ondemand.com
+https://tns-fsm-revisionext-ui-dev-xxx.cfapps.eu10-004.hana.ondemand.com
 ```
 
 > Standalone mode is primarily for pure-frontend UI work (CSS, layout, view
@@ -604,7 +604,7 @@ Revision number 3 made for smartform 'Revision - 3: Genehmigt - Testing'.
 ## 📁 Project Structure
 
 ```
-tng-fsm-revisionext-ui/
+tns-fsm-revisionext-ui/
 │
 ├── # ─────────── ROOT LEVEL ───────────
 ├── index.js                         # Express server, context store, /api routes
@@ -635,7 +635,7 @@ tng-fsm-revisionext-ui/
 webapp/
 │
 ├── index.html                       # App entry point
-├── manifest.json                    # UI5 app descriptor (id: com.tng.fsm.revisionext.app)
+├── manifest.json                    # UI5 app descriptor (id: com.tns.fsm.revisionext.app)
 ├── Component.js                     # UI5 Component
 ├── appconfig.json                   # App configuration
 │
@@ -672,8 +672,8 @@ webapp/
 ### View Logs
 
 ```bash
-cf logs tng-fsm-revisionext-ui-dev --recent   # recent buffered logs
-cf logs tng-fsm-revisionext-ui-dev            # live tail
+cf logs tns-fsm-revisionext-ui-dev --recent   # recent buffered logs
+cf logs tns-fsm-revisionext-ui-dev            # live tail
 ```
 
 ### Common Issues
@@ -710,8 +710,8 @@ Successful writes do not log (kept quiet by design).
 |                          |                                              |
 |--------------------------|----------------------------------------------|
 | **App Name**             | RevisionExt                                  |
-| **Module Name**          | com.tng.fsm.revisionext.app                  |
-| **CF App Name**          | tng-fsm-revisionext-ui-dev                   |
+| **Module Name**          | com.tns.fsm.revisionext.app                  |
+| **CF App Name**          | tns-fsm-revisionext-ui-dev                   |
 | **Framework**            | SAP UI5 (Fiori) + Node.js Express            |
 | **UI5 Theme**            | sap_horizon                                  |
 | **Deployment Platform**  | SAP Business Technology Platform (Cloud Foundry, eu10-004) |

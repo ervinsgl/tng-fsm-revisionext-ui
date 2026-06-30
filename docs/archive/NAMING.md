@@ -1,6 +1,6 @@
-# Naming Conventions for TNG FSM Extensions
+# Naming Conventions for tns FSM Extensions
 
-> **Scope:** This document applies to all SAP BTP extensions for FSM in the TNG estate.
+> **Scope:** This document applies to all SAP BTP extensions for FSM in the tns estate.
 > All future apps in this portfolio should follow these conventions from initial setup.
 > 
 > **Status:** Active.
@@ -26,17 +26,17 @@ The "Example" column uses a hypothetical equipment-list app to illustrate.
 
 | Aspect | Pattern | Example: Equipment List app |
 |---|---|---|
-| App ID (`manifest.json`) | `com.tng.fsm.<capability>.app` | `com.tng.fsm.equipmentlist.app` |
-| CF app name | `tng-fsm-<capability>-<artifact>-<env>` | `tng-fsm-equipmentlist-ui-dev` |
-| CF route (auto-generated) | `<cf-app-name>.cfapps.<region>.hana.ondemand.com` | `tng-fsm-equipmentlist-ui-dev-<orgslug>.cfapps.eu10-004.hana.ondemand.com` |
+| App ID (`manifest.json`) | `com.tns.fsm.<capability>.app` | `com.tns.fsm.equipmentlist.app` |
+| CF app name | `tns-fsm-<capability>-<artifact>-<env>` | `tns-fsm-equipmentlist-ui-dev` |
+| CF route (auto-generated) | `<cf-app-name>.cfapps.<region>.hana.ondemand.com` | `tns-fsm-equipmentlist-ui-dev-<orgslug>.cfapps.eu10-004.hana.ondemand.com` |
 | Service binding (destination) | `fsm-<capability>-destination-<env>` | `fsm-equipmentlist-destination-dev` |
 | Service binding (other) | `fsm-<capability>-<service-type>-<env>` | `fsm-equipmentlist-xsuaa-dev` |
 | Controller file | `<Capability>.controller.js` | `EquipmentList.controller.js` |
 | View file | `<Capability>.view.xml` | `EquipmentList.view.xml` |
-| Local repo folder | `tng-fsm-<capability>-<artifact>` (no env) | `tng-fsm-equipmentlist-ui` |
-| GitHub repo name | `tng-fsm-<capability>-<artifact>` | `tng-fsm-equipmentlist-ui` |
-| `package.json` `name` field | `tng-fsm-<capability>-<artifact>` | `tng-fsm-equipmentlist-ui` |
-| `xs-security.json` `xsappname` | `com.tng.fsm.<capability>.app` (matches App ID) | `com.tng.fsm.equipmentlist.app` |
+| Local repo folder | `tns-fsm-<capability>-<artifact>` (no env) | `tns-fsm-equipmentlist-ui` |
+| GitHub repo name | `tns-fsm-<capability>-<artifact>` | `tns-fsm-equipmentlist-ui` |
+| `package.json` `name` field | `tns-fsm-<capability>-<artifact>` | `tns-fsm-equipmentlist-ui` |
+| `xs-security.json` `xsappname` | `com.tns.fsm.<capability>.app` (matches App ID) | `com.tns.fsm.equipmentlist.app` |
 
 ---
 
@@ -82,34 +82,34 @@ environments — it's the namespace, not the deployment.
 
 | Env | CF app name | Service binding | URL |
 |---|---|---|---|
-| Dev | `tng-fsm-equipmentlist-ui-dev` | `fsm-equipmentlist-destination-dev` | `tng-fsm-equipmentlist-ui-dev-...cfapps...` |
-| Test | `tng-fsm-equipmentlist-ui-test` | `fsm-equipmentlist-destination-test` | `tng-fsm-equipmentlist-ui-test-...cfapps...` |
-| Prod | `tng-fsm-equipmentlist-ui-prod` | `fsm-equipmentlist-destination-prod` | `tng-fsm-equipmentlist-ui-prod-...cfapps...` |
+| Dev | `tns-fsm-equipmentlist-ui-dev` | `fsm-equipmentlist-destination-dev` | `tns-fsm-equipmentlist-ui-dev-...cfapps...` |
+| Test | `tns-fsm-equipmentlist-ui-test` | `fsm-equipmentlist-destination-test` | `tns-fsm-equipmentlist-ui-test-...cfapps...` |
+| Prod | `tns-fsm-equipmentlist-ui-prod` | `fsm-equipmentlist-destination-prod` | `tns-fsm-equipmentlist-ui-prod-...cfapps...` |
 
-App ID `com.tng.fsm.equipmentlist.app` stays the same in dev, test, and prod —
+App ID `com.tns.fsm.equipmentlist.app` stays the same in dev, test, and prod —
 the namespace is environment-agnostic. Only the deployment-side identifiers vary.
 
 ---
 
 ## Why these specific patterns
 
-### Reverse-DNS for App IDs (`com.tng.fsm.<capability>.app`)
+### Reverse-DNS for App IDs (`com.tns.fsm.<capability>.app`)
 
 UI5 standard. Allows multiple apps to coexist in the same namespace tree without
 collision. The `com.` prefix is convention from Java/Android, adopted by SAP.
 The trailing `.app` segment distinguishes app identifiers from sub-modules within
-an app (e.g., `com.tng.fsm.equipmentlist.controller.EquipmentList`).
+an app (e.g., `com.tns.fsm.equipmentlist.controller.EquipmentList`).
 
 ### Hyphen-separated CF app names
 
 Cloud Foundry restriction — app names cannot contain dots, only alphanumerics
-and hyphens. The pattern `tng-fsm-<capability>-<artifact>-<env>` is sortable in
-BTP cockpit listings (alphabetical sort groups all `tng-fsm-*` together, then
+and hyphens. The pattern `tns-fsm-<capability>-<artifact>-<env>` is sortable in
+BTP cockpit listings (alphabetical sort groups all `tns-fsm-*` together, then
 all `-equipmentlist-*` together within that, then `-ui-` artifacts within that).
 
 ### Capability-first in service bindings (`fsm-<capability>-destination-<env>`)
 
-Drops the `tng-` prefix on service bindings to reduce visual noise in BTP cockpit.
+Drops the `tns-` prefix on service bindings to reduce visual noise in BTP cockpit.
 All FSM-related services start with `fsm-`, making them easy to filter and identify.
 The capability comes second (so they sort grouped by capability when listed
 alphabetically). The artifact-type segment of the CF app name (`ui`) is omitted
@@ -119,10 +119,10 @@ because some app uses it).
 ### PascalCase for controller and view files (`<Capability>.controller.js`)
 
 UI5 standard convention, matches how `Component.js` is named. The class declaration
-inside (`Controller.extend("com.tng.fsm.<capability>.app.controller.<Capability>")`)
+inside (`Controller.extend("com.tns.fsm.<capability>.app.controller.<Capability>")`)
 mirrors the file name.
 
-### Folder name without `<env>` (`tng-fsm-<capability>-<artifact>`)
+### Folder name without `<env>` (`tns-fsm-<capability>-<artifact>`)
 
 The folder is a single source repository, deployed to all environments from the
 same git branch. Including `<env>` in the folder name would be misleading — there's
@@ -135,7 +135,7 @@ The folder name matches the GitHub repo name and the `package.json` name field.
 `xs-security.json#xsappname` is the SAP authorization service identifier. By
 matching it to the UI5 App ID, both the security configuration and the namespace
 identify the same logical app. Convention makes it easier to reason about
-"is this a TNG FSM extension and which one."
+"is this a tns FSM extension and which one."
 
 ---
 
@@ -160,11 +160,11 @@ These are decisions for separate documentation:
 ### Starting a new app
 
 1. Pick the `<capability>` name (must be unique across the FSM extension portfolio).
-2. Create a new GitHub repo named `tng-fsm-<capability>-ui`.
+2. Create a new GitHub repo named `tns-fsm-<capability>-ui`.
 3. Create the local folder with the same name.
-4. In `manifest.json`, set `sap.app.id = "com.tng.fsm.<capability>.app"`.
-5. In `package.json`, set `name = "tng-fsm-<capability>-ui"`.
-6. In `xs-security.json`, set `xsappname = "com.tng.fsm.<capability>.app"`.
+4. In `manifest.json`, set `sap.app.id = "com.tns.fsm.<capability>.app"`.
+5. In `package.json`, set `name = "tns-fsm-<capability>-ui"`.
+6. In `xs-security.json`, set `xsappname = "com.tns.fsm.<capability>.app"`.
 7. In `manifest.yaml`, set the CF app name and service binding per the per-env table.
 8. Name the main controller and view file after the capability in PascalCase.
 9. Reference this document in the README so future maintainers know the conventions.
@@ -173,7 +173,7 @@ These are decisions for separate documentation:
 
 1. Create new CF service binding: `fsm-<capability>-destination-<new-env>`.
 2. Adjust `manifest.yaml` (or use a per-env manifest variant) for the new CF app
-   name `tng-fsm-<capability>-ui-<new-env>`.
+   name `tns-fsm-<capability>-ui-<new-env>`.
 3. Set the env-specific environment variables.
 4. Deploy.
 
@@ -182,7 +182,7 @@ App ID, controller name, view name, and folder name do NOT change between enviro
 ### Renaming an existing app
 
 This is a substantial undertaking — see the rename guide used for the
-`mobileappwebcontainer` → `com.tng.fsm.revisionext.app` migration. Future renames
+`mobileappwebcontainer` → `com.tns.fsm.revisionext.app` migration. Future renames
 should follow a similar phased approach: controller/view files first, then
 manifest.yaml + package.json, then App ID via find-and-replace, then deploy.
 
@@ -196,7 +196,7 @@ be more typeable. We accept the verbosity for these reasons:
 1. **Multiple apps in one BTP estate.** When there are 5 apps in a space, short
    names like `tmjournal`, `equipment`, `routing` provide no context about who
    owns them or what platform they integrate with. Long names like
-   `tng-fsm-tmjournal-ui-dev` immediately tell an operator what they're looking at.
+   `tns-fsm-tmjournal-ui-dev` immediately tell an operator what they're looking at.
 
 2. **Auditability.** Programmierrichtlinie §6 specifies naming conventions
    precisely because audits care. A consistent pattern across all extensions
@@ -234,6 +234,6 @@ The "Last updated" line at the top of this document MUST be kept current.
 
 | App | App ID | CF app (dev) | Folder |
 |---|---|---|---|
-| Revision Extension | `com.tng.fsm.revisionext.app` | `tng-fsm-revisionext-ui-dev` | `tng-fsm-revisionext-ui` |
+| Revision Extension | `com.tns.fsm.revisionext.app` | `tns-fsm-revisionext-ui-dev` | `tns-fsm-revisionext-ui` |
 
 This list will grow as more apps are added.

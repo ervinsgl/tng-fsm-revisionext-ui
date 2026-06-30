@@ -7,7 +7,7 @@
  * FSM context).
  *
  * @file webapp/utils/RevisionService.js
- * @module com.tng.fsm.revisionext.app.utils.RevisionService
+ * @module com.tns.fsm.revisionext.app.utils.RevisionService
  */
 sap.ui.define([], () => {
     "use strict";
