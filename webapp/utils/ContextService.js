@@ -90,7 +90,7 @@ sap.ui.define([], () => {
             await this._loadShellSdk();
             const raw = await this._requestShellContext();
 
-            return {
+            const context = {
                 source:                           "shell",
                 userName:                         raw.user           || "N/A",
                 companyName:                      raw.company        || "N/A",
@@ -101,6 +101,44 @@ sap.ui.define([], () => {
                 dataCloudFullQualifiedDomainName: raw.cloudHost      || "N/A",
                 authToken:                        raw.auth?.access_token || null
             };
+
+            // Web UI auth bootstrap: exchange the FSM Shell JWT for an app
+            // session token BEFORE any /api/v1/* call is made. The token is
+            // stored on window.__fsmSessionToken, which Component.js's fetch
+            // wrapper attaches as `Authorization: Bearer <token>`.
+            await this._initShellSession(context.authToken);
+
+            return context;
+        },
+
+        /**
+         * POST the FSM Shell JWT to /api/v1/shell-session-init; on success store
+         * the returned session token on window.__fsmSessionToken. Rejects if no
+         * token is available or the backend refuses the JWT, so bootstrap fails
+         * loudly rather than proceeding unauthenticated.
+         * @param {string|null} authToken - FSM Shell access_token (JWT)
+         * @private
+         */
+        async _initShellSession(authToken) {
+            if (!authToken) {
+                throw new Error("No FSM Shell auth token available for session init");
+            }
+
+            const response = await fetch("/api/v1/shell-session-init", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ authToken })
+            });
+            if (!response.ok) {
+                throw new Error(`Shell session init HTTP ${response.status}`);
+            }
+
+            const data = await response.json();
+            const token = data && data.data && data.data.sessionToken;
+            if (!token) {
+                throw new Error("Shell session init returned no token");
+            }
+            window.__fsmSessionToken = token;
         },
 
         /**

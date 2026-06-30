@@ -15,22 +15,6 @@ sap.ui.define([], () => {
     return {
 
         /**
-         * Fetch closed ChecklistInstances (smartforms) for an Activity.
-         * @param {string} objectId - Activity UUID (context.cloudId)
-         * @returns {Promise<Array<{id: string, description: string, name: string}>>}
-         */
-        async getChecklistInstances(objectId) {
-            if (!objectId) return [];
-
-            const url = `/api/checklist-instances?objectId=${encodeURIComponent(objectId)}`;
-            const response = await fetch(url);
-            if (!response.ok) throw new Error(`Checklist instances HTTP ${response.status}`);
-
-            const data = await response.json();
-            return data.data || [];
-        },
-
-        /**
          * Fetch the activity revision tree reshaped into per-smartform tables.
          * Returns { activities, tables } where each table has activity-lineage
          * rows with smartform data on the original row.
@@ -41,7 +25,7 @@ sap.ui.define([], () => {
         async getActivityRevisions(objectId) {
             if (!objectId) return { activities: [], tables: [] };
 
-            const url = `/api/activity-revisions?objectId=${encodeURIComponent(objectId)}`;
+            const url = `/api/v1/activity-revisions?objectId=${encodeURIComponent(objectId)}`;
             const response = await fetch(url);
             if (!response.ok) throw new Error(`Activity revisions HTTP ${response.status}`);
 
@@ -62,7 +46,7 @@ sap.ui.define([], () => {
         async getServiceCallTree(serviceCallId, keepActivityId, originalCode, smartform) {
             if (!serviceCallId) throw new Error("No serviceCallId provided");
 
-            let url = `/api/service-call-tree?serviceCallId=${encodeURIComponent(serviceCallId)}`;
+            let url = `/api/v1/service-call-tree?serviceCallId=${encodeURIComponent(serviceCallId)}`;
             if (keepActivityId) {
                 url += `&keepActivityId=${encodeURIComponent(keepActivityId)}`;
             }
@@ -104,7 +88,7 @@ sap.ui.define([], () => {
         async createRevision(serviceCallId, keepActivityId, originalCode, smartform) {
             if (!serviceCallId) throw new Error("No serviceCallId provided");
 
-            const response = await fetch("/api/create-revision", {
+            const response = await fetch("/api/v1/create-revision", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ serviceCallId, keepActivityId, originalCode, smartform })

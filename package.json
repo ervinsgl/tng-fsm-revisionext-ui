@@ -15,7 +15,9 @@
   },
   "dependencies": {
     "axios": "^1.7.9",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "jwks-rsa": "^3.1.0"
   },
   "devDependencies": {
     "@ui5/cli": "^4.0.33",

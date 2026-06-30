@@ -15,7 +15,11 @@
 
 const express = require('express');
 const path = require('path');
-const FSMService = require('./utils/FSMService');
+const crypto = require('crypto');
+const readSvc = require('./utils/RevisionReadService');
+const writeSvc = require('./utils/RevisionWriteService');
+const jwtValidator = require('./utils/FSMJwtValidator');
+const { createRequireSession } = require('./utils/requireSession');
 
 const app = express();
 
@@ -32,20 +36,42 @@ const sessions = {};
 const SESSION_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 /**
+ * Map of sessionToken -> { contextKey, expires }
+ * Issued by BOTH auth flows (Mobile cookie / Web UI Bearer) and validated by
+ * the requireSession middleware on every /api/v1/* call. Sliding 60-min TTL.
+ */
+const sessionStore = new Map();
+
+/**
+ * Issue a new opaque session token bound to a context key, store it with a
+ * sliding TTL, and return the token string.
+ * @param {string} contextKey - "<userName>-<cloudId>" or shell identity key
+ * @returns {string} the session token
+ */
+function issueSessionToken(contextKey) {
+    const token = crypto.randomBytes(32).toString('base64url');
+    sessionStore.set(token, { contextKey, expires: Date.now() + SESSION_TTL_MS });
+    return token;
+}
+
+// Tier 3 middleware bound to this server's store + TTL.
+const requireSession = createRequireSession({ sessionStore, ttlMs: SESSION_TTL_MS });
+
+/**
  * Remove sessions older than SESSION_TTL_MS.
  * Runs every 10 minutes.
  */
 setInterval(() => {
     const cutoff = Date.now() - SESSION_TTL_MS;
-    let removed = 0;
     Object.keys(sessions).forEach(key => {
         if (sessions[key]._timestamp < cutoff) {
             delete sessions[key];
-            removed++;
         }
     });
-    if (removed > 0) {
-        console.log(`Session cleanup: removed ${removed} expired session(s). Active: ${Object.keys(sessions).length}`);
+    // Evict expired session tokens too.
+    const now = Date.now();
+    for (const [token, entry] of sessionStore) {
+        if (entry.expires < now) sessionStore.delete(token);
     }
 }, 10 * 60 * 1000);
 
@@ -80,7 +106,18 @@ function handleMobilePost(body, res) {
 
     sessions[key] = { ...body, _timestamp: Date.now() };
 
-    console.log(`Web container opened | user: ${userName} | objectType: ${body?.objectType} | session: ${key}`);
+    // Issue a session token for this context and deliver it as an HttpOnly
+    // cookie (Mobile WebView stores first-party cookies reliably).
+    const token = issueSessionToken(key);
+    res.cookie('fsm_session', token, {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'None',
+        path: '/',
+        maxAge: SESSION_TTL_MS
+    });
+
+    console.log(`WC-ACCESS-POINT: context stored, session issued | user: ${userName} | objectType: ${body?.objectType} | session: ${key}`);
 
     const host = res.req.protocol + '://' + res.req.get('host');
     res.redirect(`${host}/?session=${encodeURIComponent(key)}`);
@@ -106,13 +143,45 @@ app.post('/', (req, res) => {
 });
 
 /**
+ * POST /api/v1/shell-session-init
+ * Body: { authToken: <FSM Shell JWT> }
+ *
+ * Web UI Shell flow (Tier 2 + Tier 3). Verifies the FSM-issued JWT against
+ * FSM's JWKS, then issues a session token returned in the JSON body (no cookie
+ * — browsers won't store a third-party cookie in the Shell iframe). The
+ * frontend sends this token as `Authorization: Bearer <token>` thereafter.
+ * This endpoint is intentionally NOT behind requireSession (it bootstraps it).
+ */
+app.post('/api/v1/shell-session-init', async (req, res) => {
+    const authToken = req.body?.authToken;
+    if (!authToken) {
+        console.error('SHELL-INIT: rejected — missing authToken in body');
+        return res.status(400).json({ message: 'Missing authToken.' });
+    }
+
+    try {
+        const decoded = await jwtValidator.verify(authToken);
+        // Identity from the verified payload; fall back gracefully on claim names.
+        const userName = decoded.user_name || decoded.userName || decoded.sub || 'shell-user';
+        const account = decoded.account || decoded.accountName || 'unknown';
+        const contextKey = `${userName}-${account}`;
+        const token = issueSessionToken(contextKey);
+        console.log(`SHELL-INIT: session issued | user: ${userName}`);
+        return res.json({ data: { sessionToken: token } });
+    } catch (error) {
+        console.error('SHELL-INIT: rejected — JWT validation failed:', error.message);
+        return res.status(401).json({ message: 'JWT validation failed.' });
+    }
+});
+
+/**
  * GET /web-container-context?session=<key>
  *
  * Frontend calls this on load to retrieve its own stored context.
  * Returns 404 if no session key is provided or the key is not found
  * (e.g. app opened directly in a browser, or session expired).
  */
-app.get('/web-container-context', (req, res) => {
+app.get('/web-container-context', requireSession, (req, res) => {
     const key = req.query.session;
 
     if (!key) {
@@ -130,31 +199,6 @@ app.get('/web-container-context', (req, res) => {
 });
 
 /**
- * GET /api/checklist-instances?objectId=<activityObjectId>
- *
- * Returns all closed ChecklistInstances (smartforms) for the given Activity
- * objectId, shaped for the UI list: [{ id, description }].
- *
- * objectId is the cloudId resolved from the FSM context (mobile or shell),
- * passed by the frontend. This keeps the route source-agnostic.
- */
-app.get('/api/checklist-instances', async (req, res) => {
-    const objectId = req.query.objectId;
-
-    if (!objectId) {
-        return res.status(400).json({ message: 'Missing objectId query parameter.' });
-    }
-
-    try {
-        const instances = await FSMService.getInspectionSmartformsForActivity(objectId);
-        return res.json({ data: instances });
-    } catch (error) {
-        console.error('checklist-instances route error:', error.message);
-        return res.status(502).json({ message: 'Failed to fetch checklist instances from FSM.' });
-    }
-});
-
-/**
  * GET /api/activity-revisions?objectId=<activityId>
  *
  * Returns the activity revision tree (original first, then revisions by
@@ -165,7 +209,7 @@ app.get('/api/checklist-instances', async (req, res) => {
  *
  * objectId is the cloudId (Activity UUID) resolved from the FSM context.
  */
-app.get('/api/activity-revisions', async (req, res) => {
+app.get('/api/v1/activity-revisions', requireSession, async (req, res) => {
     const objectId = req.query.objectId;
 
     if (!objectId) {
@@ -173,7 +217,7 @@ app.get('/api/activity-revisions', async (req, res) => {
     }
 
     try {
-        const tree = await FSMService.getActivityTreeWithSmartforms(objectId);
+        const tree = await readSvc.getActivityTreeWithSmartforms(objectId);
         return res.json({ data: tree });
     } catch (error) {
         console.error('activity-revisions route error:', error.message);
@@ -190,7 +234,7 @@ app.get('/api/activity-revisions', async (req, res) => {
  * plus the new-revision smartform payload for the table whose button was
  * pressed. The next revision number is computed live (max + 1).
  */
-app.get('/api/service-call-tree', async (req, res) => {
+app.get('/api/v1/service-call-tree', requireSession, async (req, res) => {
     const serviceCallId = req.query.serviceCallId;
     const keepActivityId = req.query.keepActivityId;
     const originalCode = req.query.originalCode;
@@ -207,7 +251,7 @@ app.get('/api/service-call-tree', async (req, res) => {
     }
 
     try {
-        const tree = await FSMService.buildNewRevisionPayload(serviceCallId, keepActivityId, originalCode, smartform);
+        const tree = await writeSvc.buildNewRevisionPayload(serviceCallId, keepActivityId, originalCode, smartform);
         return res.json({ data: tree });
     } catch (error) {
         console.error('service-call-tree route error:', error.message);
@@ -223,7 +267,7 @@ app.get('/api/service-call-tree', async (req, res) => {
  * smartform (with the created activity id) -> PATCH original activity's
  * Z_FollowUpRevisions (only when a new revision activity was created).
  */
-app.post('/api/create-revision', async (req, res) => {
+app.post('/api/v1/create-revision', requireSession, async (req, res) => {
     const { serviceCallId, keepActivityId, originalCode, smartform } = req.body || {};
 
     if (!serviceCallId) {
@@ -231,7 +275,7 @@ app.post('/api/create-revision', async (req, res) => {
     }
 
     try {
-        const result = await FSMService.createRevision(serviceCallId, keepActivityId, originalCode, smartform);
+        const result = await writeSvc.createRevision(serviceCallId, keepActivityId, originalCode, smartform);
         return res.json({ data: result });
     } catch (error) {
         console.error('create-revision route error:', error.message);
