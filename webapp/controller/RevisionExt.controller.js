@@ -2,9 +2,10 @@ sap.ui.define([
     "sap/ui/core/mvc/Controller",
     "sap/ui/model/json/JSONModel",
     "sap/m/MessageBox",
+    "sap/base/i18n/Localization",
     "com/tng/fsm/revisionext/app/utils/ContextService",
     "com/tng/fsm/revisionext/app/utils/RevisionService"
-], (Controller, JSONModel, MessageBox, ContextService, RevisionService) => {
+], (Controller, JSONModel, MessageBox, Localization, ContextService, RevisionService) => {
     "use strict";
 
     return Controller.extend("com.tng.fsm.revisionext.app.controller.RevisionExt", {
@@ -27,11 +28,61 @@ sap.ui.define([
             this._loadContext();
         },
 
+        /** Resource bundle accessor. */
+        _i18n() {
+            return this.getView().getModel("i18n").getResourceBundle();
+        },
+
+        /** Get a translated text, with optional placeholder args. */
+        _t(sKey, aArgs) {
+            return this._i18n().getText(sKey, aArgs);
+        },
+
+        /**
+         * Formatter: revision label for a row.
+         * @param {boolean} bIsOriginal
+         * @param {number|null} iRevisionNumber
+         * @param {string} sOriginal - i18n>revisionOriginal
+         * @param {string} sLabel - i18n>revisionLabel (with {0})
+         * @param {string} sUnknown - i18n>revisionLabelUnknown
+         */
+        formatRevisionLabel(bIsOriginal, iRevisionNumber, sOriginal, sLabel, sUnknown) {
+            if (bIsOriginal) {
+                return sOriginal;
+            }
+            if (iRevisionNumber == null) {
+                return sUnknown;
+            }
+            // sLabel is "Rev-{0}"; substitute manually (parts already resolved).
+            return sLabel.replace("{0}", iRevisionNumber);
+        },
+
+        /**
+         * Formatter: smartform status text.
+         * @param {boolean} bHasSmartform
+         * @param {boolean} bClosed
+         * @param {string} sClosed - i18n>statusClosed
+         * @param {string} sOpen - i18n>statusOpen
+         */
+        formatStatusText(bHasSmartform, bClosed, sClosed, sOpen) {
+            if (!bHasSmartform) {
+                return "";
+            }
+            return bClosed === true ? sClosed : sOpen;
+        },
+
         async _loadContext() {
             const oModel = this.getView().getModel("view");
 
             try {
                 const context = await ContextService.getContext();
+
+                // Apply the FSM UI language BEFORE flipping contextLoaded (which
+                // makes the translatable content visible). setLanguage fires
+                // localizationChanged, which the i18n ResourceModel honors, so
+                // all {i18n>...} bindings re-resolve. Shell context exposes
+                // .locale, mobile exposes .language; accept either.
+                this._setAppLanguage(context.locale || context.language);
 
                 oModel.setProperty("/context", context);
                 oModel.setProperty("/contextLoaded", true);
@@ -52,6 +103,30 @@ sap.ui.define([
                 console.warn("FSM context not available:", error.message);
                 oModel.setProperty("/showError", true);
                 oModel.setProperty("/busy", false);
+            }
+        },
+
+        /**
+         * Set the application language from the FSM context.
+         * Normalizes 'de-DE' / 'de_DE' -> 'de', restricts to the languages this
+         * app ships bundles for, and only switches when it actually differs.
+         * Must run before the translatable content becomes visible.
+         * @param {string} language - FSM locale (e.g. 'de', 'en', 'de-DE')
+         * @private
+         */
+        _setAppLanguage(language) {
+            if (!language) return;
+
+            const SUPPORTED = ["en", "de"];
+            const langCode = language.toString().toLowerCase().split("-")[0].split("_")[0];
+            if (SUPPORTED.indexOf(langCode) === -1) return;
+
+            const currentLang = Localization.getLanguage() || "";
+            const currentLangCode = currentLang.toLowerCase().split("-")[0].split("_")[0];
+
+            if (langCode !== currentLangCode) {
+                console.log(`Setting language to '${langCode}' (from FSM context)`);
+                Localization.setLanguage(langCode);
             }
         },
 
@@ -120,7 +195,7 @@ sap.ui.define([
             const sOriginalCode = oModel.getProperty("/originalCode");
 
             if (!sServiceCallId) {
-                MessageBox.warning("No ServiceCall found for the original activity.");
+                MessageBox.warning(this._t("warnNoServiceCall"));
                 return;
             }
 
@@ -131,7 +206,7 @@ sap.ui.define([
                 preview = await RevisionService.getServiceCallTree(sServiceCallId, sKeepActivityId, sOriginalCode, oSmartform);
             } catch (error) {
                 console.error("Failed to build revision preview:", error.message);
-                MessageBox.error("Failed to prepare the revision: " + error.message);
+                MessageBox.error(this._t("errPreparing", [error.message]));
                 return;
             } finally {
                 oModel.setProperty("/busy", false);
@@ -145,19 +220,24 @@ sap.ui.define([
             const smartformDescription = (preview.smartformPayload && preview.smartformPayload.description) || "";
 
             const sInfo =
-                `Next revision number: ${nextRev != null ? nextRev : "(unknown)"}\n` +
-                `Revision ServiceCall: ${revisionCode} ` +
-                `(${scExists ? "EXISTS — activity will be appended" : "NEW — will be created"})\n` +
-                `Revision Activity: ${activityCode} ` +
-                `(${actExists ? "EXISTS — smartform attached" : "NEW — will be created"})\n` +
-                `Smartform description: ${smartformDescription}`;
+                this._t("confNextRevision", [nextRev != null ? nextRev : this._t("unknown")]) + "\n" +
+                this._t("confServiceCall", [
+                    revisionCode,
+                    scExists ? this._t("stateScExists") : this._t("stateScNew")
+                ]) + "\n" +
+                this._t("confActivity", [
+                    activityCode,
+                    actExists ? this._t("stateActExists") : this._t("stateActNew")
+                ]) + "\n" +
+                this._t("confSmartformDescription", [smartformDescription]);
 
+            const sCreate = this._t("actionCreate");
             MessageBox.confirm(sInfo, {
-                title: "Create Revision",
-                actions: ["Create", MessageBox.Action.CLOSE],
-                emphasizedAction: "Create",
+                title: this._t("dlgCreateTitle"),
+                actions: [sCreate, MessageBox.Action.CLOSE],
+                emphasizedAction: sCreate,
                 onClose: (sAction) => {
-                    if (sAction === "Create") {
+                    if (sAction === sCreate) {
                         this._executeCreateRevision(sServiceCallId, sKeepActivityId, sOriginalCode, oSmartform);
                     }
                 }
@@ -181,12 +261,12 @@ sap.ui.define([
                 }
 
                 MessageBox.success(
-                    `Revision number ${nextRev} made for smartform '${sfDesc}'.`,
-                    { title: "Revision Created" }
+                    this._t("msgRevisionCreated", [nextRev, sfDesc]),
+                    { title: this._t("dlgCreatedTitle") }
                 );
             } catch (error) {
                 console.error("Failed to create revision:", error.message);
-                MessageBox.error("Failed to create revision: " + error.message);
+                MessageBox.error(this._t("errCreating", [error.message]));
             } finally {
                 oModel.setProperty("/busy", false);
             }

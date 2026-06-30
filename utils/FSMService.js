@@ -1090,6 +1090,20 @@ class FSMService {
     }
 
     /**
+     * Parse the revision number from an activity/ServiceCall code.
+     * Matches the trailing 'Rev-<n>' segment, tolerating leading zeros and an
+     * FSM auto-suffix (e.g. '20103-Rev-007' -> 7, '8200002124-Rev-004-7' -> 4).
+     * @param {string} code
+     * @returns {number|null}
+     * @private
+     */
+    _revisionNumberFromCode(code) {
+        if (!code) return null;
+        const m = /-Rev-0*(\d+)/i.exec(String(code));
+        return m ? parseInt(m[1], 10) : null;
+    }
+
+    /**
      * Activity core fields by Activity id.
      * Used both to classify the context activity (original vs revision) and
      * to read the original's code/subject/serviceCallId.
@@ -1193,7 +1207,8 @@ class FSMService {
         const data = await this.makeQueryRequest(query, 'Activity.43');
 
         if (!data.data) return [];
-        return data.data.map(item => {
+
+        const parsed = data.data.map(item => {
             const w = item.w;
             return {
                 id: w.id || null,
@@ -1203,6 +1218,8 @@ class FSMService {
                 code: w.code != null ? w.code : null
             };
         });
+
+        return parsed;
     }
 
     /**
@@ -1242,7 +1259,15 @@ class FSMService {
             const revActivities = await this._getRevisionActivities(original.id);
 
             const revisions = revActivities.map(ra => {
-                const num = ra.serviceCallId ? scNumberMap.get(ra.serviceCallId) : null;
+                // Primary: parse the revision number from the activity code
+                // (e.g. '20103-Rev-007' -> 7). The code is a reliable top-level
+                // field. Fallback: the ServiceCall id -> number join (only works
+                // if object.objectId came back on the activity rows).
+                let num = this._revisionNumberFromCode(ra.code);
+                if (num == null && ra.serviceCallId) {
+                    const joined = scNumberMap.get(ra.serviceCallId);
+                    if (joined != null) num = joined;
+                }
                 return {
                     isOriginal: false,
                     revisionNumber: (num != null ? num : null),
@@ -1336,6 +1361,7 @@ class FSMService {
             const activities = tree.map(a => ({
                 isOriginal: !!a.isOriginal,
                 revisionLabel: a.revisionLabel,
+                revisionNumber: a.revisionNumber,
                 code: a.code != null ? a.code : '',
                 id: a.id,
                 subject: a.subject != null ? a.subject : ''
@@ -1414,6 +1440,7 @@ class FSMService {
                         return {
                             isOriginal: act.isOriginal,
                             revisionLabel: act.revisionLabel,
+                            revisionNumber: act.revisionNumber,
                             code: act.code,
                             id: act.id,
                             subject: act.subject,
