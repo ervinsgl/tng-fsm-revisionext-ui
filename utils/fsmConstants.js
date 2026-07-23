@@ -106,8 +106,9 @@ const UDF = Object.freeze({
     // Attachment description.
     ATTACHMENT_DESCRIPTION:   'Z_Attachment_Description',
 
-    // Original-activity UDF removed from the revision activity.
-    ACT_S4_ITEM_DESCRIPTION:  'Z_Act_S4ItemDescription'
+    // Original-activity UDFs removed from the revision activity.
+    ACT_S4_ITEM_DESCRIPTION:  'Z_Act_S4ItemDescription',
+    ACT_APPROVAL_HISTORY:     'Z_ActApprovalHistory'
 });
 
 /**

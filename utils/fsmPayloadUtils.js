@@ -128,14 +128,15 @@ function transformRevisionHeader(tree, originalCode, nextRevisionNumber, existin
  * Transform the original activity segment into the NEW revision's activity.
  * MUTATES the activity in place:
  *   - id -> existing revision activity id or null; code -> activityCode;
- *     externalId -> null
+ *     externalId -> original externalId + "-Rev-<NNN>" (null if none)
  *   - previousActivity -> originalActivityId (read pipeline filters on this)
  *   - subject -> `<originalCode> Rev-<N>` + bracketed attribute suffix
  *   - attachments -> null
- *   - remove transient/child fields
+ *   - remove transient/child fields (incl. supportingPersons — the revision
+ *     activity must not inherit the original's supporting persons)
  *   - upsert Z_UpdateAttributes='true', Z_Act_RevisionOfActivity=<link>,
  *     Z_Activity_Type=revision type
- *   - remove Z_FollowUpRevisions, Z_Act_S4ItemDescription
+ *   - remove Z_FollowUpRevisions, Z_Act_S4ItemDescription, Z_ActApprovalHistory
  *
  * @param {Object} act - the activity segment
  * @param {string} originalActivityId - original activity id (for the link)
@@ -157,7 +158,15 @@ function transformRevisionActivity(act, originalActivityId, originalCode, nextRe
     // revision level is identifiable.
     act.id = existingActivityId || null;
     act.code = activityCode || null;
-    act.externalId = null;
+
+    // externalId gets the SAME "-Rev-<NNN>" suffix as the code, appended to
+    // the ORIGINAL activity's externalId (e.g. "8200002222/110" ->
+    // "8200002222/110-Rev-005"). Cleared if the original has no externalId.
+    const revSuffix = `-Rev-${String(n).padStart(3, '0')}`;
+    const origExternalId = (act.externalId != null && String(act.externalId).trim() !== '')
+        ? String(act.externalId)
+        : null;
+    act.externalId = origExternalId ? `${origExternalId}${revSuffix}` : null;
 
     // Link the new activity to the original so the read pipeline finds it
     // as a revision (revision-activity query filters on previousActivity).
@@ -179,7 +188,8 @@ function transformRevisionActivity(act, originalActivityId, originalCode, nextRe
     // Remove transient / child-collection fields.
     ['lastChanged', 'remarks', 'contact', 'reservedMaterials', 'requirements',
      'region', 'workflowSteps', 'internalRemarks', 'internalRemarks2',
-     'statusChangeReason', 'activityFeedbacks', 'plannedStartDate', 'plannedEndDate'
+     'statusChangeReason', 'activityFeedbacks', 'plannedStartDate', 'plannedEndDate',
+     'supportingPersons'
     ].forEach(f => { delete act[f]; });
 
     // Upsert revision UDFs.
@@ -190,7 +200,11 @@ function transformRevisionActivity(act, originalActivityId, originalCode, nextRe
     act.udfValues = upsertCompositeUdf(act.udfValues, UDF.ACTIVITY_TYPE, TYPE.ACTIVITY_REVISION);
 
     // Remove UDFs only relevant to the original activity.
-    act.udfValues = removeCompositeUdfs(act.udfValues, [UDF.FOLLOW_UP_REVISIONS, UDF.ACT_S4_ITEM_DESCRIPTION]);
+    act.udfValues = removeCompositeUdfs(act.udfValues, [
+        UDF.FOLLOW_UP_REVISIONS,
+        UDF.ACT_S4_ITEM_DESCRIPTION,
+        UDF.ACT_APPROVAL_HISTORY
+    ]);
 
     return act;
 }
