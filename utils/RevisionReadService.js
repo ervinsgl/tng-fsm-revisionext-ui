@@ -25,7 +25,8 @@
 'use strict';
 
 const fsmHttp = require('./FsmHttpClient');
-const { DTO, UDF, REQUIRED_TAG } = require('./fsmConstants');
+const DestinationService = require('./DestinationService');
+const { DTO, UDF, REQUIRED_TAG, APPROVAL, DESTINATION_NAME } = require('./fsmConstants');
 
 class RevisionReadService {
 
@@ -277,6 +278,67 @@ class RevisionReadService {
     // ─────────────────────────────────────────────────────────────────
 
     /**
+     * Build the FSM shell deep-link for an activity (same format used for the
+     * revision links written into activity UDFs). Returns '' if either input is
+     * missing, so the frontend can treat empty href as "not a link".
+     * @param {string} activityId
+     * @param {string} baseUrl - FSM base URL (trailing slashes trimmed)
+     * @param {string} companyId - numeric company id
+     * @returns {string} full URL or ''
+     * @private
+     */
+    _activityDeepLink(activityId, baseUrl, companyId) {
+        if (!activityId || !baseUrl || companyId == null || companyId === '') return '';
+        const base = String(baseUrl).replace(/\/+$/, '');
+        return `${base}/shell/#/planning-dispatching/activities/view/${activityId}/details?selectedCompanyId=${companyId}`;
+    }
+
+    /**
+     * Look up a smartform's (ChecklistInstance's) approval status via the
+     * Linker_Object UDO. Joins UdoValue -> UdoMeta and reads the
+     * z_Linker_ApprovalActivity_Status UDF for the linker row whose
+     * z_Linker_Checklist_Instance1 equals the smartform id.
+     *
+     * Returns the raw status string (e.g. 'Genehmigt', 'Offen') or null when no
+     * linker row exists ({ data: [] }) or the value is absent.
+     *
+     * @param {string} smartformId - ChecklistInstance id
+     * @returns {Promise<string|null>} status value, or null
+     * @private
+     */
+    async _getSmartformApprovalStatus(smartformId) {
+        if (!smartformId) return null;
+        const dtos = `${DTO.UDO_META};${DTO.UDO_VALUE}`;
+        const query =
+            `SELECT w.udf.${UDF.LINKER_APPROVAL_STATUS} FROM UdoValue w ` +
+            `JOIN UdoMeta m ON m.id = w.meta ` +
+            `WHERE m.name = '${APPROVAL.LINKER_META_NAME}' ` +
+            `AND w.udf.${UDF.LINKER_CHECKLIST_INSTANCE} = '${smartformId}'`;
+
+        try {
+            const data = await fsmHttp.makeQueryRequest(query, dtos);
+            const rows = (data && Array.isArray(data.data)) ? data.data : [];
+            if (rows.length === 0) {
+                return null;
+            }
+
+            // Read the status value from the first row's udfValues (Query API
+            // shape: { name, value }). Name-match is defensive in case the
+            // projection returns multiple UDFs.
+            const w = rows[0] && rows[0].w;
+            const udfVals = (w && Array.isArray(w.udfValues)) ? w.udfValues : [];
+            const hit = udfVals.find(u => u && u.name === UDF.LINKER_APPROVAL_STATUS);
+            const value = (hit && hit.value != null) ? hit.value : null;
+            return value;
+        } catch (error) {
+            // On error, return null. The caller treats null as "not approved"
+            // -> the smartform is hidden (fail-closed).
+            console.error(`RevisionReadService: approval lookup failed for smartform ${smartformId}:`, error.message);
+            return null;
+        }
+    }
+
+    /**
      * Activity core fields by Activity id. Used both to classify the context
      * activity (original vs revision) and to read the original's
      * code/subject/serviceCallId. object.objectId is the parent ServiceCall id.
@@ -513,6 +575,20 @@ class RevisionReadService {
                 return { activities: [], tables: [] };
             }
 
+            // Base URL + company id for the per-row activity deep-links (Code
+            // column hyperlinks). Same destination the write pipeline uses for
+            // revision links. Failure is non-fatal: links fall back to ''.
+            let linkBaseUrl = '';
+            let linkCompanyId = '';
+            try {
+                const destination = await DestinationService.getDestination(DESTINATION_NAME);
+                const dcfg = (destination && destination.destinationConfiguration) || {};
+                linkBaseUrl = dcfg.URL || '';
+                linkCompanyId = dcfg['URL.headers.X-Company-ID'] || '';
+            } catch (e) {
+                console.error('RevisionReadService: destination lookup failed for activity deep-links:', e.message);
+            }
+
             // Shared activity lineage (already ordered: original, then revisions).
             const activities = tree.map(a => ({
                 isOriginal: !!a.isOriginal,
@@ -520,7 +596,9 @@ class RevisionReadService {
                 revisionNumber: a.revisionNumber,
                 code: a.code != null ? a.code : '',
                 id: a.id,
-                subject: a.subject != null ? a.subject : ''
+                subject: a.subject != null ? a.subject : '',
+                // Deep-link to this activity for the clickable Code column.
+                activityUrl: this._activityDeepLink(a.id, linkBaseUrl, linkCompanyId)
             }));
 
             // Original activity's ServiceCall id + activity id, for the Create
@@ -561,9 +639,21 @@ class RevisionReadService {
 
             // Roots = smartforms on the ORIGINAL activity that are their own
             // root (previousChecklist self/null). One table per root.
-            const roots = allSmartforms.filter(sf =>
+            const candidateRoots = allSmartforms.filter(sf =>
                 sf.activityId === originalActivityId &&
                 (!sf.previousChecklist || sf.previousChecklist === sf.id)
+            );
+
+            // Only show originals whose approval status is APPROVED ('Genehmigt').
+            // A non-approved original (e.g. 'Offen') doesn't get a table, since
+            // revisions are only relevant once the original is approved. The
+            // status comes from the Linker_Object UDO lookup (fail-closed: a
+            // null/error status hides the smartform).
+            const rootApprovals = await Promise.all(
+                candidateRoots.map(sf => this._getSmartformApprovalStatus(sf.id))
+            );
+            const roots = candidateRoots.filter(
+                (sf, i) => rootApprovals[i] === APPROVAL.APPROVED_STATUS
             );
 
             // Activity lookup (lineage order preserved) for row construction.
@@ -599,6 +689,9 @@ class RevisionReadService {
                             code: act.code,
                             id: act.id,
                             subject: act.subject,
+                            // Deep-link for the clickable Code column (carried
+                            // from the activities lineage; '' when unavailable).
+                            activityUrl: act.activityUrl || '',
                             smartformId: sf ? sf.id : '',
                             smartformDescription: sf ? (sf.rawDescription || sf.description || '') : '',
                             smartformName: sf ? (sf.name || '') : '',

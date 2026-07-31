@@ -77,8 +77,8 @@ function removeCompositeUdfs(udfValues, externalIds) {
  * Transform a fetched ServiceCall composite-tree into the payload for a
  * NEW revision's ServiceCall header. MUTATES the header in place:
  *   - id -> existing SC id (append) or null (create)
- *   - code -> `<code>-Rev-<NNN>` (N = nextRevisionNumber, NNN zero-padded to 3)
- *   - subject -> `<originalCode> Rev-<N>`
+ *   - code -> `<code>-<originalCode>-Rev-<NNN>` (unique per original activity)
+ *   - subject -> the assembled code
  *   - type -> revision SC type
  *   - remove externalId + transient/child fields
  *   - upsert Z_RevisionOfActivity = originalCode, Z_revisionNumber = N
@@ -101,9 +101,13 @@ function transformRevisionHeader(tree, originalCode, nextRevisionNumber, existin
     // with X-Create-Or-Update branches on this.
     tree.id = existingServiceCallId || null;
     if (tree.code != null) {
-        tree.code = `${tree.code}-Rev-${padded}`;
+        // Embed the original activity code so the revision SC code is unique
+        // per original activity (e.g. '8200008332-33219-Rev-001'). Prevents the
+        // CA-202 duplicate-SC-code collision when a parent SC has multiple
+        // revisioned activities. Must match revisionCode in RevisionWriteService.
+        tree.code = `${tree.code}-${originalCode}-Rev-${padded}`;
     }
-    tree.subject = `${originalCode} Rev-${n}`;
+    tree.subject = tree.code || `${originalCode} Rev-${n}`;
     // Revision ServiceCalls use TYPE.SERVICE_CALL_REVISION (original is
     // TYPE.SERVICE_CALL_ORIGINAL).
     tree.type = TYPE.SERVICE_CALL_REVISION;
@@ -186,8 +190,11 @@ function transformRevisionActivity(act, originalActivityId, originalCode, nextRe
     act.attachments = null;
 
     // Remove transient / child-collection fields.
+    // NOTE: FSM returns `workflowStep` (singular) on GET but rejects it on the
+    // V43 write DTO (CA-09 "not part of ActivityDTO_V43"). Both spellings are
+    // stripped — the read shape is not the write shape.
     ['lastChanged', 'remarks', 'contact', 'reservedMaterials', 'requirements',
-     'region', 'workflowSteps', 'internalRemarks', 'internalRemarks2',
+     'region', 'workflowStep', 'workflowSteps', 'internalRemarks', 'internalRemarks2',
      'statusChangeReason', 'activityFeedbacks', 'plannedStartDate', 'plannedEndDate',
      'supportingPersons'
     ].forEach(f => { delete act[f]; });

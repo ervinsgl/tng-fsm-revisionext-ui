@@ -70,7 +70,12 @@ const DTO = Object.freeze({
     CHECKLIST_INSTANCE: 'ChecklistInstance.20',
     CHECKLIST_TEMPLATE: 'ChecklistTemplate.21',
     CHECKLIST_TAG:      'ChecklistTag.10',
-    SERVICE_CALL:       'ServiceCall.27'
+    SERVICE_CALL:       'ServiceCall.27',
+    // UDO (User-Defined Object) DTOs for the smartform approval-status lookup.
+    // The approval query joins UdoValue -> UdoMeta and is passed both, joined
+    // by ';' in the dtos param (e.g. 'UdoMeta.10;UdoValue.10').
+    UDO_META:           'UdoMeta.10',
+    UDO_VALUE:          'UdoValue.10'
 });
 
 /**
@@ -108,7 +113,13 @@ const UDF = Object.freeze({
 
     // Original-activity UDFs removed from the revision activity.
     ACT_S4_ITEM_DESCRIPTION:  'Z_Act_S4ItemDescription',
-    ACT_APPROVAL_HISTORY:     'Z_ActApprovalHistory'
+    ACT_APPROVAL_HISTORY:     'Z_ActApprovalHistory',
+
+    // Smartform approval-status lookup (UdoValue Linker_Object). The linker row
+    // ties an approval activity to a ChecklistInstance; its status UDF holds the
+    // German approval state ('Genehmigt' = approved, 'Offen' = open, etc.).
+    LINKER_CHECKLIST_INSTANCE: 'z_Linker_Checklist_Instance1',
+    LINKER_APPROVAL_STATUS:    'z_Linker_ApprovalActivity_Status'
 });
 
 /**
@@ -129,11 +140,26 @@ const TYPE = Object.freeze({
     ACTIVITY_REVISION:     '-7'
 });
 
+/**
+ * Smartform approval lookup constants.
+ *   LINKER_META_NAME - UdoMeta.name of the linker object joining approval
+ *                      activities to ChecklistInstances.
+ *   APPROVED_STATUS  - the z_Linker_ApprovalActivity_Status value that means
+ *                      "approved". Only smartforms with this status are shown
+ *                      (revisions are only relevant for approved originals).
+ * @type {Readonly<Object<string,string>>}
+ */
+const APPROVAL = Object.freeze({
+    LINKER_META_NAME: 'Linker_Object',
+    APPROVED_STATUS:  'Genehmigt'
+});
+
 module.exports = {
     DESTINATION_NAME,
     REQUIRED_TAG,
     FSM_ACCOUNT_DEFAULTS,
     DTO,
     UDF,
-    TYPE
+    TYPE,
+    APPROVAL
 };

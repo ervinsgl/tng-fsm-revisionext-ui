@@ -143,13 +143,16 @@ class RevisionWriteService {
 
         const tree = await fsmHttp.getServiceCallCompositeTree(originalServiceCallId, originalActivityId);
 
-        // Revision ServiceCall code is the ORIGINAL ServiceCall's code (tree.code,
-        // e.g. '8200002124') + suffix — NOT the activity code (originalCode, e.g.
-        // '19846'). Check if that SC already exists: if so PATCH appends to it
-        // (keep its id); otherwise a new SC is created (id null).
+        // Revision ServiceCall code = ORIGINAL ServiceCall code + ORIGINAL
+        // activity code + suffix (e.g. '8200008332-33219-Rev-001'). Embedding
+        // the activity code makes the SC code unique per original activity, so
+        // two activities under the same parent SC no longer collide on
+        // '<sc>-Rev-NNN' (was CA-202: duplicate SC code). One SC + one activity
+        // per original activity per revision level. Existence is checked via
+        // revision UDFs below (suffix-proof), not this code.
         const padded = String(nextRevisionNumber).padStart(3, '0');
         const baseScCode = tree.code != null ? tree.code : originalCode;
-        const revisionCode = `${baseScCode}-Rev-${padded}`;
+        const revisionCode = `${baseScCode}-${originalCode}-Rev-${padded}`;
         // Suffix-proof existence check by revision UDFs (NOT bare code): FSM
         // auto-suffixes duplicate SC codes, so a code match would never find the
         // SC we just created and we'd create a new one every time.

@@ -4,7 +4,7 @@ A SAP Fiori application for SAP Field Service Management (FSM), operated as an F
 
 > **Version:** 0.0.1
 > **Platform:** SAP BTP Cloud Foundry
-> **Last Updated:** June 2026
+> **Last Updated:** July 2026
 
 ---
 
@@ -63,7 +63,9 @@ It integrates with FSM Web UI (Shell Extension), auto-detecting the activity in 
 **Key Features:**
 - ✅ Reads the full **revision tree** of an activity (Original → Rev-1 → Rev-2 → …)
 - ✅ Groups revisions into **per-smartform tables** - one table per inspection smartform lineage
+- ✅ Only **approved** originals form tables - smartforms whose approval status is not `Genehmigt` are hidden
 - ✅ Shows each revision's smartform **Open/Closed status** with color coding
+- ✅ **Clickable Code column** - each row's code deep-links to that activity in the FSM Shell
 - ✅ **Search** smartform tables by description/name, and **expand/collapse all**
 - ✅ Tables sorted **newest-first** by the root smartform's last-changed
 - ✅ One-click **Create Revision** per table: assembles and submits ServiceCall + Activity + smartform
@@ -167,7 +169,8 @@ Understanding RevisionExt requires a few FSM-specific concepts:
 | **Revision number** | Stored on the revision's ServiceCall as `Z_revisionNumber` (with `Z_RevisionOfActivity` = the original activity code). The next number is computed **per table** as the count of existing revision rows + 1. |
 | **Per-smartform table** | The UI renders one table per **inspection smartform** on the original activity. Each table's rows are only the revisions whose smartform chains (via `Z_PreviousChecklist`) back to that table's root smartform. |
 | **`Z_PreviousChecklist`** | Links a smartform to its predecessor. Load-bearing: it determines which table a revision row belongs to, not just display order. |
-| **One SC + one Activity per revision level** | All smartform tables at revision N share a single ServiceCall (`<code>-Rev-NNN`) and a single Activity (`<actcode>-Rev-NNN`). The first table to create level N creates them; later tables **append** their smartform to the existing activity. |
+| **One SC + one Activity per revision level (per original activity)** | For a given original activity, all smartform tables at revision N share a single ServiceCall (`<origCode>-<actCode>-Rev-NNN`) and a single Activity (`<actCode>-Rev-NNN`). The first table to create level N creates them; later tables **append** their smartform to the existing activity. The SC code embeds the **original activity code** so that two revisioned activities under the **same** parent ServiceCall get distinct SC codes and never collide (see [Revision ServiceCall code](#revision-servicecall-code)). |
+| **Approval gate (`Genehmigt`)** | An original smartform forms a table **only** when its approval status is `Genehmigt` (approved). Status comes from the `Linker_Object` UDO (`z_Linker_ApprovalActivity_Status`); anything else (e.g. `Offen`) is hidden, since revisions are only relevant once the original is approved. |
 | **Open vs Closed smartforms** | Closed smartforms always show. Open smartforms show **only for revisions** (so freshly created revisions are visible immediately); open smartforms on the **Original** are hidden, since the inspection isn't finished. |
 
 ---
@@ -180,7 +183,7 @@ Understanding RevisionExt requires a few FSM-specific concepts:
 |-----------|-------------|
 | **Search & Expand/Collapse** | A search field filters smartform tables by description/name (client-side, live); an Expand/Collapse All toggle opens or closes every table at once. |
 | **Per-Smartform Tables** | One collapsible panel + table per inspection smartform on the original activity. Collapsed by default for clean scanning of many smartforms. Sorted newest-first by the root smartform's last-changed. |
-| **Revision Rows** | Each row = one activity in the lineage: Revision label, Code, Smartform Description, Smartform Name, Attachment Name, Status. The Original row is highlighted. |
+| **Revision Rows** | Each row = one activity in the lineage: Revision label, Code, Smartform Description, Smartform Name, Attachment Name, Status. The Original row is highlighted. The **Code** is a hyperlink that opens that activity in the FSM Shell (new tab). |
 | **Status Column** | Color-coded smartform status - green "Closed" / red "Open" - per revision row. |
 | **Create Revision Button** | One per table, in the panel header toolbar. Opens a confirmation dialog with the next revision number and the create-or-append decision, then executes on confirm. |
 | **Confirmation Dialog** | Shows next revision number, the revision ServiceCall and Activity codes (with NEW / EXISTS status), and the smartform description, with **Create** / **Close** buttons. |
@@ -194,8 +197,10 @@ The app resolves a single context activity into a full grouped revision view:
 |-------|----------|--------|
 | **Activity revision tree** | Original activity + all `-7` revision activities, joined to their ServiceCall revision numbers | Query API (`Activity.43`, `ServiceCall.27`) |
 | **Inspection smartforms** | Closed (and open, for revisions) ChecklistInstances tagged "Inspection" | Query API (`ChecklistInstance.20`, `ChecklistTemplate.21`, `ChecklistTag.10`) |
+| **Approval gate** | Each candidate original root smartform is kept only if its approval status is `Genehmigt` | Query API (`UdoValue.10` JOIN `UdoMeta.10`, `Linker_Object`) |
 | **Per-chain grouping** | Each smartform → its root table via the `Z_PreviousChecklist` chain | JavaScript chain resolution |
 | **Attachments** | Attachment file name + description per populated smartform row | Query API (`Attachment.19`) |
+| **Activity deep-links** | Full FSM Shell URL per row (Code column hyperlink) | BTP Destination (`FSM_OAUTH_CONNECT`: base URL + company id) |
 
 *Backend module: `utils/RevisionReadService.js` (HTTP via `utils/FsmHttpClient.js`).*
 
@@ -581,7 +586,7 @@ confirmation dialog:
 
 ```
 Next revision number: 3
-Revision ServiceCall: 8200002124-Rev-003 (NEW — will be created)
+Revision ServiceCall: 8200002124-19846-Rev-003 (NEW — will be created)
 Revision Activity: 19846-Rev-003 (NEW — will be created)
 Smartform description: Revision - 3: Genehmigt - Testing
 ```
@@ -590,7 +595,7 @@ Smartform description: Revision - 3: Genehmigt - Testing
 
 | Payload | Key transformations |
 |---------|---------------------|
-| **ServiceCall header** | `id` = existing SC id (append) or absent (create); `code` = `<origCode>-Rev-NNN`; `subject` = `<actCode> Rev-N`; `type` = `-8`; `externalId` removed; upsert `Z_RevisionOfActivity` + `Z_revisionNumber`. |
+| **ServiceCall header** | `id` = existing SC id (append) or absent (create); `code` = `<origCode>-<actCode>-Rev-NNN`; `subject` = the assembled code; `type` = `-8`; `externalId` removed; upsert `Z_RevisionOfActivity` + `Z_revisionNumber`. |
 | **Activity segment** | `id` = existing activity id or absent; `code` = `<actCode>-Rev-NNN`; `previousActivity` = original id; subject rewritten (keeps bracketed suffix); upsert `Z_UpdateAttributes`, `Z_Act_RevisionOfActivity` (deep link), `Z_Activity_Type='-7'`; remove `Z_FollowUpRevisions`, `Z_Act_S4ItemDescription`; attachments cleared. |
 | **Smartform** | Copied from the table's root smartform; `description` prefixed `Revision - N: `; `closed: false`; `Z_PreviousChecklist` = last smartform in the table (or root); `Z_PruefberichtNr` = original root's value; fresh UUID v4 `checklistId`; `object.objectId` = the revision activity. |
 | **Follow-up** | `Z_FollowUpRevisions` update for the **original** activity - appends the new revision line. Only built when a new revision activity is created. |
@@ -619,6 +624,29 @@ already exist - matched by **UDF**, not by code:
 If they exist, the new smartform is **appended** to the existing activity (one SC +
 one Activity per revision level, shared across smartform tables). If not, they are
 **created**.
+
+#### Revision ServiceCall code
+
+The revision ServiceCall code is `<origCode>-<actCode>-Rev-NNN` (e.g.
+`8200002124-19846-Rev-003`) - the original ServiceCall code, the **original
+activity code**, then the zero-padded revision number.
+
+Embedding the activity code makes the SC code **unique per original activity**. A
+single parent ServiceCall can carry several inspection activities, and each can be
+revised independently. Without the activity code, two activities under the same
+parent SC would both resolve to `<origCode>-Rev-NNN` and collide on FSM's SC-code
+uniqueness constraint:
+
+```
+CA-202: Object [ServiceCall:...] doesn't have a unique code [8200008332-Rev-001].
+```
+
+With the activity code in the middle, `8200008332-33219-Rev-001` and
+`8200008332-33223-Rev-001` are distinct, so sibling activities never collide. The
+revision-number regex (`/-Rev-0*(\d+)/i`) still parses correctly, since the code
+still ends in `-Rev-NNN`. The two assembly sites - `RevisionWriteService`
+(`revisionCode`, drives the preview) and `fsmPayloadUtils` (`tree.code`, what's
+written) - are kept in lock-step.
 
 ### 4. Execution (on Confirm)
 
@@ -688,8 +716,11 @@ session token is required; see [Security Notes](#-security-notes)).
 | `ChecklistTemplate` | `.21` | Template names + tags |
 | `ChecklistTag` | `.10` | "Inspection" tag resolution |
 | `Attachment` | `.19` | Attachment file name + description |
+| `UdoMeta` | `.10` | Approval lookup: resolve the `Linker_Object` UDO meta |
+| `UdoValue` | `.10` | Approval lookup: read `z_Linker_ApprovalActivity_Status` per smartform |
 
 > DTO versions and UDF external IDs are centralized in `utils/fsmConstants.js`.
+> The approval lookup and the `Genehmigt` value live under the `APPROVAL` export.
 
 ---
 
@@ -721,10 +752,10 @@ tns-fsm-revisionext-ui/
 │
 ├── # ─────────── BACKEND SERVICES ───────────
 ├── utils/
-│   ├── fsmConstants.js              # Destination name, DTO versions, UDF ids, type codes
+│   ├── fsmConstants.js              # Destination name, DTO versions, UDF ids, type codes, approval consts
 │   ├── fsmPayloadUtils.js           # Stateless payload transforms (header/activity/refs/nulls)
 │   ├── FsmHttpClient.js             # FSM HTTP/auth layer: Query + Composite-Tree GETs, headers
-│   ├── RevisionReadService.js       # Read pipeline: revision tree + per-smartform tables
+│   ├── RevisionReadService.js       # Read pipeline: revision tree + per-smartform tables (approval gate, deep-links)
 │   ├── RevisionWriteService.js      # Write pipeline: payload assembly + create flow
 │   ├── DestinationService.js        # BTP Destination handling
 │   ├── TokenCache.js                # OAuth token caching (5 min pre-expiry buffer)
@@ -794,7 +825,9 @@ cf logs tns-fsm-revisionext-ui-sandbox            # live tail
 | `Cannot invoke "Object.toString()" because "value" is null` | Explicit `null` sent on create | Handled by `stripNulls` in `fsmPayloadUtils`. Check the logged payload for any remaining nulls. |
 | Revision number repeats (e.g. two Rev-2) | A second create fired before the first revision's smartform was visible, or gappy historical data | Numbering counts existing revision rows; open rows now count too. Gappy legacy data (Rev-3 with no Rev-1) can collide - the UDF-based create-or-append check absorbs most cases. |
 | Wrong next revision number per table | Per-table count includes only that table's rows | Expected: each smartform table numbers its own revisions. |
-| No tables shown | No closed inspection smartforms on the original activity | Tables form only from **closed** inspection smartforms on the Original. |
+| No tables shown | No closed **and approved** inspection smartforms on the original activity | Tables form only from **closed** inspection smartforms on the Original whose approval status is `Genehmigt`. Check the `[DEBUG][approval]` logs: `rows=0` means no linker row was found (query/field issue); a status other than `'Genehmigt'` (e.g. `'Offen'`) means the original isn't approved yet and is correctly hidden. |
+| `CA-202 ... doesn't have a unique code [<sc>-Rev-NNN]` | Two revisioned activities under one parent SC collided on the old `<origCode>-Rev-NNN` code format | Fixed by the `<origCode>-<actCode>-Rev-NNN` code format (unique per original activity). If it recurs, verify both assembly sites (`RevisionWriteService.revisionCode` and `fsmPayloadUtils` `tree.code`) match. |
+| Code column not clickable / links to nothing | Destination lookup failed, so `activityUrl` came back empty | Check for `[DEBUG][deeplink] destination lookup failed` in the logs. The link needs the `FSM_OAUTH_CONNECT` base URL + `X-Company-ID`; empty company id yields a non-navigable link. |
 | Context not detected | Not opened from FSM Web UI | Ensure launched from FSM Web UI; standalone mode has no real context. |
 | FSM calls fail with auth errors | Destination misconfigured | Verify the `FSM_OAUTH_CONNECT` destination, OAuth credentials, and `account`/`company` additional properties. |
 | Deploy fails to bind / 404 on staging | Destination service instance missing | Create `fsm-revisionext-destination` (unsuffixed) in the subaccount before deploy. |
@@ -844,16 +877,19 @@ writes do not log (kept quiet by design).
 **Revision Read Pipeline**
 - Activity revision tree resolution (Original + `-7` revisions, joined to SC revision numbers)
 - Inspection smartform detection (template tagged "Inspection")
+- Approval gate: only `Genehmigt` originals form tables (`Linker_Object` UDO lookup)
 - Per-chain table grouping via `Z_PreviousChecklist`
 - Open/Closed status per revision row (color-coded); Original shows closed-only
 - Attachment resolution per populated row
 - Per-table live revision numbering
 - Tables sorted newest-first by root smartform last-changed
+- Per-row activity deep-links for the clickable Code column
 
 **Revision Write Pipeline**
 - One-click Create Revision per table (confirm → execute → refresh)
 - ServiceCall header + Activity + smartform payload assembly
 - UDF-based create-or-append: one SC + one Activity per revision level, shared across tables
+- SC code `<origCode>-<actCode>-Rev-NNN` (unique per original activity; fixes CA-202 sibling collision)
 - Identifier-reference reduction + null stripping for FSM validation
 - `previousActivity` + `Z_Activity_Type` set via post-create Activity PATCH
 - `Z_FollowUpRevisions` maintenance on the original activity (new activities only)
@@ -913,4 +949,4 @@ Internal use only - Company proprietary.
 
 ---
 
-**Last Updated:** June 2026
+**Last Updated:** July 2026

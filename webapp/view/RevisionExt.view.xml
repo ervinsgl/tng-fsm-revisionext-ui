@@ -113,7 +113,11 @@
                                                 }"
                                                 state="{= ${view>isOriginal} ? 'Information' : 'None' }"
                                                 inverted="{view>isOriginal}" />
-                                            <Text text="{view>code}" />
+                                            <Link
+                                                text="{view>code}"
+                                                href="{view>activityUrl}"
+                                                target="_blank"
+                                                wrapping="true" />
                                             <Text text="{view>smartformDescription}" />
                                             <Text text="{view>smartformName}" />
                                             <Text text="{view>attachmentName}" />
@@ -164,7 +168,11 @@
                                         }"
                                         state="{= ${view>isOriginal} ? 'Information' : 'None' }"
                                         inverted="{view>isOriginal}" />
-                                    <Text text="{view>code}" />
+                                    <Link
+                                        text="{view>code}"
+                                        href="{view>activityUrl}"
+                                        target="_blank"
+                                        wrapping="true" />
                                     <Text text="{view>subject}" />
                                 </cells>
                             </ColumnListItem>
