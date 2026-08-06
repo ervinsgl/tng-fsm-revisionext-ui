@@ -3,8 +3,10 @@
  *
  * The WRITE half of the FSM revision workflow. Builds the next-revision
  * payloads and executes the create flow: PATCH/POST the ServiceCall
- * composite-tree, POST the ChecklistInstance smartform, and PATCH the original
- * activity's follow-up links + the new activity's previousActivity.
+ * composite-tree, POST the ChecklistInstance smartform, PATCH the original
+ * activity's follow-up links + the new activity's previousActivity, and attach
+ * the smartform's responsible person to the revision activity's
+ * supportingPersons when they are not already on it.
  *
  * Collaborators:
  *   - FsmHttpClient   : all HTTP (query, composite-tree GET, request context)
@@ -48,8 +50,11 @@ class RevisionWriteService {
     async _getChecklistInstanceFull(smartformId) {
         const query = `SELECT w FROM ChecklistInstance w WHERE w.id = '${smartformId}'`;
         const data = await fsmHttp.makeQueryRequest(query, DTO.CHECKLIST_INSTANCE);
-        if (!data.data || data.data.length === 0) return null;
-        return data.data[0].w || null;
+        if (!data.data || data.data.length === 0) {
+            return null;
+        }
+        const row = data.data[0].w || null;
+        return row;
     }
 
     /**
@@ -169,11 +174,24 @@ class RevisionWriteService {
         payloadUtils.transformRevisionHeader(tree, originalCode, nextRevisionNumber, existingServiceCallId);
 
         // Capture the original activity's Z_FollowUpRevisions BEFORE the
-        // transform strips it (the activity transform removes this UDF).
+        // transform strips it (the activity transform removes this UDF), and
+        // its responsibles as BARE ID STRINGS.
+        //
+        // Why the responsibles are captured here: the composite-tree create
+        // accepts responsibles (201, no error) but does NOT persist them —
+        // verified on Rev-007, where [{"id":"3C25…"}] went out and the saved
+        // activity came back with []. They are therefore re-applied on the
+        // step-2b Data API PATCH, which does persist. Note the shape differs
+        // per API: composite-tree uses [{id}], the Data API wants ["<id>"].
         let existingFollowUps = null;
+        let originalResponsibles = [];
         if (Array.isArray(tree.activities)) {
             const origAct = tree.activities.find(a => a && a.id === originalActivityId) || tree.activities[0];
-            if (origAct) existingFollowUps = payloadUtils.udfCompositeTree(origAct, UDF.FOLLOW_UP_REVISIONS);
+            if (origAct) {
+                existingFollowUps = payloadUtils.udfCompositeTree(origAct, UDF.FOLLOW_UP_REVISIONS);
+                originalResponsibles = (Array.isArray(origAct.responsibles) ? origAct.responsibles : [])
+                    .map(r => this._personId(r)).filter(Boolean);
+            }
         }
 
         // Activity transform: code = revision code, id = existing activity id
@@ -229,6 +247,7 @@ class RevisionWriteService {
             activityCode,
             revisionCode,
             followUpPayload,
+            originalResponsibles,
             originalActivityId,
             originalServiceCallId,
             companyId,
@@ -265,7 +284,8 @@ class RevisionWriteService {
 
         try {
             const response = await axios.request({ method, url, data: payload, params, headers });
-            return response.data || {};
+            const saved = response.data || {};
+            return saved;
         } catch (error) {
             console.error(`[createRevision] SC ${method.toUpperCase()} FAILED status=${error.response?.status} url=${url} body=${JSON.stringify(error.response?.data || error.message)}`);
             throw error;
@@ -305,11 +325,106 @@ class RevisionWriteService {
         const params = { ...ctx.params, dtos: DTO.ACTIVITY, forceUpdate: true };
         try {
             const response = await axios.patch(url, payload, { params, headers: ctx.headers });
-            return response.data || {};
+            const saved = response.data || {};
+            return saved;
         } catch (error) {
             console.error(`[createRevision] Activity PATCH FAILED status=${error.response?.status} url=${url} body=${JSON.stringify(error.response?.data || error.message)}`);
             throw error;
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    //  SUPPORTING-PERSONS SYNC
+    // ─────────────────────────────────────────────────────────────────
+
+    /**
+     * Normalise a person entry to its plain UUID string. FSM returns
+     * responsibles / supportingPersons / responsiblePerson as bare id strings,
+     * but tolerate the object shape ({ id }) defensively.
+     * @param {string|{id:string}|null} p
+     * @returns {string|null}
+     * @private
+     */
+    _personId(p) {
+        if (!p) return null;
+        if (typeof p === 'string') return p.trim() || null;
+        if (typeof p === 'object' && p.id) return String(p.id).trim() || null;
+        return null;
+    }
+
+    /**
+     * Read an activity's person lists. The composite-tree response does NOT
+     * carry a reliable responsibles/supportingPersons picture, so this goes
+     * straight to the Query API for the two fields.
+     *
+     * @param {string} activityId - the revision activity id
+     * @returns {Promise<{responsibles: string[], supportingPersons: string[]}|null>}
+     *          null when the activity row is not returned (do NOT treat that as
+     *          "no persons" — see _syncSupportingPersons).
+     * @private
+     */
+    async _getActivityPersons(activityId) {
+        const query = `SELECT w.responsibles, w.supportingPersons FROM Activity w WHERE w.id = '${activityId}'`;
+        const data = await fsmHttp.makeQueryRequest(query, DTO.ACTIVITY);
+        const rows = (data && Array.isArray(data.data)) ? data.data : null;
+        // FSM returns {"data":[]} when the activity is NOT found, but
+        // {"data":[{}]} — a row with the 'w' wrapper omitted entirely — when
+        // the activity IS found and every projected column is empty (verified
+        // Rev-007). Those must not be conflated: the first is a genuine miss
+        // and fails closed, the second is a real activity with no persons yet.
+        if (!rows || rows.length === 0) {
+            return null;
+        }
+        const row = rows[0].w || {};
+        const out = {
+            responsibles: (Array.isArray(row.responsibles) ? row.responsibles : [])
+                .map(p => this._personId(p)).filter(Boolean),
+            supportingPersons: (Array.isArray(row.supportingPersons) ? row.supportingPersons : [])
+                .map(p => this._personId(p)).filter(Boolean)
+        };
+        return out;
+    }
+
+    /**
+     * Make sure the new smartform's responsible person is attached to the
+     * revision activity. Several technicians can each own a smartform under the
+     * same original activity; every one of their revision smartforms hangs off
+     * the SAME revision activity, so each technician must be on that activity —
+     * as its responsible, or (when they are someone else) as a supporting
+     * person.
+     *
+     * Already a responsible or a supporting person -> no write.
+     * Otherwise -> PATCH supportingPersons = existing list + this person.
+     *
+     * Fail-closed: if the Query API does not return the activity row we skip
+     * the PATCH entirely rather than writing a list we cannot trust, because
+     * supportingPersons is a full-list replace — a PATCH built from an empty
+     * read would silently drop the technicians already on the activity.
+     *
+     * @param {string} activityId - revision activity id
+     * @param {string|null} responsiblePerson - new smartform's responsiblePerson
+     * @returns {Promise<boolean>} true if the activity was PATCHed
+     * @private
+     */
+    async _syncSupportingPersons(activityId, responsiblePerson) {
+        const personId = this._personId(responsiblePerson);
+        if (!activityId || !personId) return false;
+
+        const persons = await this._getActivityPersons(activityId);
+        if (!persons) {
+            console.error(`[createRevision] supportingPersons sync skipped: Activity ${activityId} not returned by the Query API.`);
+            return false;
+        }
+
+        // Already covered on either list -> nothing to do.
+        if (persons.responsibles.includes(personId) || persons.supportingPersons.includes(personId)) {
+            return false;
+        }
+
+        const supportingPersons = [...persons.supportingPersons, personId];
+        console.log(`[createRevision] Activity ${activityId}: adding ${personId} to supportingPersons (now ${supportingPersons.length}).`);
+        await this._patchActivity(activityId, { supportingPersons });
+        return true;
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -324,6 +439,8 @@ class RevisionWriteService {
      *   2b) On create, PATCH the new activity to persist previousActivity +
      *      Z_Activity_Type (composite-tree create does not persist these).
      *   3) POST the smartform with object.objectId = that activity id.
+     *   3b) PATCH the revision activity's supportingPersons when the smartform's
+     *      responsiblePerson is on neither responsibles nor supportingPersons.
      *   4) On create, PATCH the original activity's Z_FollowUpRevisions with the
      *      real activity link substituted.
      *
@@ -355,10 +472,22 @@ class RevisionWriteService {
             throw new Error(`Revision activity (code ${activityCode}) not found in ServiceCall response.`);
         }
 
-        // 2b) composite-tree create does NOT persist previousActivity on a new
-        //     child activity, so the read pipeline (which filters on it) won't
-        //     find the revision. Set it via a direct Activity PATCH. Only needed
-        //     when the activity was newly created (existing ones already link).
+        // 2b) CREATE branch only. The composite-tree create does not persist
+        //     previousActivity (read pipeline filters on it) NOR responsibles
+        //     (verified Rev-007: [{"id":"3C25…"}] sent, [] saved). Both are
+        //     re-applied here via the Data API, which does persist them.
+        //
+        //     The smartform's responsiblePerson is compared IN MEMORY against
+        //     the original activity's responsibles — no query needed, because
+        //     the activity was just created: its responsibles are exactly what
+        //     we are setting on this same call, and its supportingPersons are
+        //     empty (the composite-tree transform strips them). So if the
+        //     technician is not among the responsibles, they are the one and
+        //     only supporting person, and the whole thing is a single PATCH.
+        //
+        //     Data API shape is a bare id array (["<uuid>"]), NOT the
+        //     composite-tree [{ id }] reference shape.
+        let supportingPersonAdded = false;
         if (!built.existingActivityId) {
             const linkPayload = {
                 previousActivity: originalActivityId,
@@ -366,6 +495,19 @@ class RevisionWriteService {
                     { meta: { externalId: UDF.ACTIVITY_TYPE }, value: TYPE.ACTIVITY_REVISION }
                 ]
             };
+
+            const originalResponsibles = Array.isArray(built.originalResponsibles) ? built.originalResponsibles : [];
+            if (originalResponsibles.length) {
+                linkPayload.responsibles = originalResponsibles;
+            }
+
+            const sfPerson = this._personId(smartformPayload && smartformPayload.responsiblePerson);
+            if (sfPerson && !originalResponsibles.includes(sfPerson)) {
+                linkPayload.supportingPersons = [sfPerson];
+                supportingPersonAdded = true;
+            }
+
+            console.log(`[createRevision] Revision activity ${newActivityId} (${activityCode}): responsibles=${JSON.stringify(originalResponsibles)} supportingPersons=${JSON.stringify(linkPayload.supportingPersons || [])}`);
             await this._patchActivity(newActivityId, linkPayload);
         }
 
@@ -375,6 +517,22 @@ class RevisionWriteService {
             if (smartformPayload.object) smartformPayload.object.objectId = newActivityId;
             smartformDescription = smartformPayload.description || '';
             await this._postChecklistInstance(smartformPayload);
+        }
+
+        // 3b) APPEND branch only. The revision activity already existed, so it
+        //     may already carry responsibles plus supporting persons added by
+        //     earlier smartforms. Query the live lists and append this
+        //     technician if they are on neither. The CREATE branch is already
+        //     handled in 2b (in memory, no query).
+        if (built.existingActivityId && smartformPayload) {
+            try {
+                supportingPersonAdded = await this._syncSupportingPersons(
+                    newActivityId,
+                    smartformPayload.responsiblePerson
+                );
+            } catch (error) {
+                console.error(`[createRevision] supportingPersons sync FAILED for activity ${newActivityId}: ${error.message}`);
+            }
         }
 
         // 4) PATCH original activity's Z_FollowUpRevisions (only when new activity).
@@ -388,13 +546,15 @@ class RevisionWriteService {
             await this._patchActivity(originalActivityId, followUpPayload);
         }
 
-        return {
+        const result = {
             nextRevisionNumber,
             revisionCode,
             activityCode,
             smartformDescription,
-            newActivityId
+            newActivityId,
+            supportingPersonAdded
         };
+        return result;
     }
 }
 
