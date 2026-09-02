@@ -132,12 +132,58 @@ const UDF = Object.freeze({
  * Activity Z_Activity_Type:
  *   REVISION_ACTIVITY ('-7')  a revision activity (set on create + relink)
  *
+ * NOTE: these are TYPE codes (ServiceCall.27 surfaces them as
+ * typeCode/typeName). Do not confuse them with the STATUS codes below —
+ * '-1' means "Inspection" as a type and "Closed" as a status.
+ *
  * @type {Readonly<Object<string,string>>}
  */
 const TYPE = Object.freeze({
     SERVICE_CALL_ORIGINAL: '-1',
     SERVICE_CALL_REVISION: '-8',
     ACTIVITY_REVISION:     '-7'
+});
+
+/**
+ * ServiceCall.status codes (company-configured; the negatives are the FSM
+ * standard statuses). Written as `status` on the composite-tree payload;
+ * the ServiceCall.27 query DTO surfaces the same value as
+ * `statusCode` (+ the label in `statusName`).
+ *
+ *   OPEN   ('-2')  'Bereit zur Planung' — the SC is plannable
+ *   CLOSED ('-1')  'Closed' / 'Abgeschlossen' — FSM keeps the activities of a
+ *                  closed SC OUT of the planning list (not dispatchable, not
+ *                  editable)
+ *
+ * A revision ServiceCall must NEVER inherit the original's status: originals
+ * are routinely already closed when a revision is raised, and copying that
+ * value silently makes the new revision undispatchable.
+ *
+ * @type {Readonly<Object<string,string>>}
+ */
+const SC_STATUS = Object.freeze({
+    OPEN:   '-2',
+    CLOSED: '-1'
+});
+
+/**
+ * The state a newly created / updated REVISION activity is forced into, so it
+ * is always a plannable resource regardless of what the original activity
+ * looked like.
+ *
+ *   STATUS ('DRAFT')                the activity is not yet released/assigned
+ *   EXECUTION_STAGE ('DISPATCHING') it sits in the planning & dispatching list
+ *
+ * Previously neither field was written and both were inherited from the
+ * original activity segment of the composite tree — the observed 'DISPATCHING'
+ * was FSM's own derivation (we strip `responsibles`, so the activity is
+ * created unassigned), not something this app controlled.
+ *
+ * @type {Readonly<Object<string,string>>}
+ */
+const ACTIVITY_STATE = Object.freeze({
+    STATUS:          'DRAFT',
+    EXECUTION_STAGE: 'DISPATCHING'
 });
 
 /**
@@ -161,5 +207,7 @@ module.exports = {
     DTO,
     UDF,
     TYPE,
+    SC_STATUS,
+    ACTIVITY_STATE,
     APPROVAL
 };

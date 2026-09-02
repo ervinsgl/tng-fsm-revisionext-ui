@@ -20,7 +20,7 @@
  */
 'use strict';
 
-const { UDF, TYPE } = require('./fsmConstants');
+const { UDF, TYPE, SC_STATUS, ACTIVITY_STATE } = require('./fsmConstants');
 
 /**
  * Read a UDF value from a composite-tree DTO's udfValues array.
@@ -80,6 +80,8 @@ function removeCompositeUdfs(udfValues, externalIds) {
  *   - code -> `<code>-<originalCode>-Rev-<NNN>` (unique per original activity)
  *   - subject -> the assembled code
  *   - type -> revision SC type
+ *   - status -> SC_STATUS.OPEN on CREATE; removed entirely on APPEND (never
+ *     inherited from the original either way)
  *   - remove externalId + transient/child fields
  *   - upsert Z_RevisionOfActivity = originalCode, Z_revisionNumber = N
  * Activity segment is transformed later (separate step).
@@ -111,6 +113,26 @@ function transformRevisionHeader(tree, originalCode, nextRevisionNumber, existin
     // Revision ServiceCalls use TYPE.SERVICE_CALL_REVISION (original is
     // TYPE.SERVICE_CALL_ORIGINAL).
     tree.type = TYPE.SERVICE_CALL_REVISION;
+
+    // Status is OWNED BY CREATE ONLY, and never inherited from the original.
+    // The original SC is routinely already closed ('-1' / 'Abgeschlossen') by
+    // the time a revision is raised, and FSM keeps the activities of a closed
+    // SC OUT of the planning list — so a copied status makes the new revision
+    // neither dispatchable nor editable.
+    //
+    // On APPEND the field is DELETED, not left as fetched: this tree comes
+    // from the ORIGINAL SC on every run, so keeping the value would PATCH the
+    // original's status onto the existing revision SC. Omitting it leaves
+    // whatever the revision SC already has (its own lifecycle is the
+    // planner's business). Composite-tree PATCH is partial — the same
+    // mechanism by which lastChanged / resolution / responsibles are already
+    // omitted on this branch without being nulled.
+    if (existingServiceCallId) {
+        delete tree.status;
+    } else {
+        tree.status = SC_STATUS.OPEN;
+    }
+
     // externalId belongs to the original SC; the revision SC must not carry it.
     delete tree.externalId;
 
@@ -135,6 +157,8 @@ function transformRevisionHeader(tree, originalCode, nextRevisionNumber, existin
  *     externalId -> original externalId + "-Rev-<NNN>" (null if none)
  *   - previousActivity -> originalActivityId (read pipeline filters on this)
  *   - subject -> `<originalCode> Rev-<N>` + bracketed attribute suffix
+ *   - status -> 'DRAFT' and executionStage -> 'DISPATCHING' on CREATE; both
+ *     removed entirely on APPEND (never inherited from the original either way)
  *   - attachments -> null
  *   - remove transient/child fields (incl. supportingPersons — the revision
  *     activity must not inherit the original's supporting persons)
@@ -187,16 +211,42 @@ function transformRevisionActivity(act, originalActivityId, originalCode, nextRe
         act.subject = subjectPrefix;
     }
 
+    // Status / execution stage are OWNED BY CREATE ONLY, and never inherited
+    // from the original activity. On create, forcing DRAFT + DISPATCHING makes
+    // every revision activity a plannable resource — unreleased, unassigned,
+    // sitting in the planning & dispatching list — instead of leaving the
+    // stage to FSM's own derivation (unassigned -> DISPATCHING, because
+    // `responsibles` is stripped below) or to the original's closed state.
+    //
+    // On APPEND both fields are DELETED, not left as fetched: this segment
+    // comes from the ORIGINAL activity on every run, so keeping the values
+    // would PATCH the original's state onto the existing revision activity and
+    // undo a planner's work (a revision already released or in execution must
+    // not be knocked back to DRAFT because a second smartform was attached).
+    if (existingActivityId) {
+        delete act.status;
+        delete act.executionStage;
+    } else {
+        act.status = ACTIVITY_STATE.STATUS;                   // 'DRAFT'
+        act.executionStage = ACTIVITY_STATE.EXECUTION_STAGE;  // 'DISPATCHING'
+    }
+
     act.attachments = null;
 
     // Remove transient / child-collection fields.
     // NOTE: FSM returns `workflowStep` (singular) on GET but rejects it on the
     // V43 write DTO (CA-09 "not part of ActivityDTO_V43"). Both spellings are
     // stripped — the read shape is not the write shape.
+    // NOTE: `responsibles` is stripped so a revision activity is created
+    // UNASSIGNED and lands in the planning list; a planner assigns it when the
+    // revision is scheduled. `supportingPersons` is stripped here too because
+    // it is owned by the Data API PATCH in RevisionWriteService (step 2b/3b),
+    // which accumulates one entry per revision smartform technician. Sending
+    // either field on the composite tree could clobber that state.
     ['lastChanged', 'remarks', 'contact', 'reservedMaterials', 'requirements',
      'region', 'workflowStep', 'workflowSteps', 'internalRemarks', 'internalRemarks2',
      'statusChangeReason', 'activityFeedbacks', 'plannedStartDate', 'plannedEndDate',
-     'supportingPersons'
+     'supportingPersons', 'responsibles'
     ].forEach(f => { delete act[f]; });
 
     // Upsert revision UDFs.

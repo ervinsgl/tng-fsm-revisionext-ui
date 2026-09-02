@@ -4,7 +4,7 @@ A SAP Fiori application for SAP Field Service Management (FSM), operated as an F
 
 > **Version:** 0.0.1
 > **Platform:** SAP BTP Cloud Foundry
-> **Last Updated:** July 2026
+> **Last Updated:** September 2026
 
 ---
 
@@ -170,6 +170,7 @@ Understanding RevisionExt requires a few FSM-specific concepts:
 | **Per-smartform table** | The UI renders one table per **inspection smartform** on the original activity. Each table's rows are only the revisions whose smartform chains (via `Z_PreviousChecklist`) back to that table's root smartform. |
 | **`Z_PreviousChecklist`** | Links a smartform to its predecessor. Load-bearing: it determines which table a revision row belongs to, not just display order. |
 | **One SC + one Activity per revision level (per original activity)** | For a given original activity, all smartform tables at revision N share a single ServiceCall (`<origCode>-<actCode>-Rev-NNN`) and a single Activity (`<actCode>-Rev-NNN`). The first table to create level N creates them; later tables **append** their smartform to the existing activity. The SC code embeds the **original activity code** so that two revisioned activities under the **same** parent ServiceCall get distinct SC codes and never collide (see [Revision ServiceCall code](#revision-servicecall-code)). |
+| **Revision state** | A revision is always created as plannable work: ServiceCall `status = '-2'` ("Bereit zur Planung"), activity `status = 'DRAFT'` + `executionStage = 'DISPATCHING'`, unassigned (`responsibles` stripped). Never inherited from the original, which is usually already closed. Set on **create only**; appends leave the revision's own state alone. |
 | **Approval gate (`Genehmigt`)** | An original smartform forms a table **only** when its approval status is `Genehmigt` (approved). Status comes from the `Linker_Object` UDO (`z_Linker_ApprovalActivity_Status`); anything else (e.g. `Offen`) is hidden, since revisions are only relevant once the original is approved. |
 | **Open vs Closed smartforms** | Closed smartforms always show. Open smartforms show **only for revisions** (so freshly created revisions are visible immediately); open smartforms on the **Original** are hidden, since the inspection isn't finished. |
 
@@ -595,10 +596,21 @@ Smartform description: Revision - 3: Genehmigt - Testing
 
 | Payload | Key transformations |
 |---------|---------------------|
-| **ServiceCall header** | `id` = existing SC id (append) or absent (create); `code` = `<origCode>-<actCode>-Rev-NNN`; `subject` = the assembled code; `type` = `-8`; `externalId` removed; upsert `Z_RevisionOfActivity` + `Z_revisionNumber`. |
-| **Activity segment** | `id` = existing activity id or absent; `code` = `<actCode>-Rev-NNN`; `previousActivity` = original id; subject rewritten (keeps bracketed suffix); upsert `Z_UpdateAttributes`, `Z_Act_RevisionOfActivity` (deep link), `Z_Activity_Type='-7'`; remove `Z_FollowUpRevisions`, `Z_Act_S4ItemDescription`; attachments cleared. |
+| **ServiceCall header** | `id` = existing SC id (append) or absent (create); `code` = `<origCode>-<actCode>-Rev-NNN`; `subject` = the assembled code; `type` = `-8`; **`status` = `-2` ("Bereit zur Planung") on create, removed entirely on append**; `externalId` removed; upsert `Z_RevisionOfActivity` + `Z_revisionNumber`. |
+| **Activity segment** | `id` = existing activity id or absent; `code` = `<actCode>-Rev-NNN`; `previousActivity` = original id; subject rewritten (keeps bracketed suffix); **`status` = `DRAFT` + `executionStage` = `DISPATCHING` on create, both removed entirely on append**; upsert `Z_UpdateAttributes`, `Z_Act_RevisionOfActivity` (deep link), `Z_Activity_Type='-7'`; remove `Z_FollowUpRevisions`, `Z_Act_S4ItemDescription`; attachments cleared. |
 | **Smartform** | Copied from the table's root smartform; `description` prefixed `Revision - N: `; `closed: false`; `Z_PreviousChecklist` = last smartform in the table (or root); `Z_PruefberichtNr` = original root's value; fresh UUID v4 `checklistId`; `object.objectId` = the revision activity. |
 | **Follow-up** | `Z_FollowUpRevisions` update for the **original** activity - appends the new revision line. Only built when a new revision activity is created. |
+
+**Status and execution stage are never inherited.** The composite tree is fetched from
+the **original** ServiceCall on every run - including on append, where the whole
+transformed tree is PATCHed onto the existing revision SC. An original is routinely
+already closed (`-1`) by the time a revision is raised, and FSM keeps the activities of
+a closed SC out of the planning list, so a copied status silently makes the revision
+undispatchable and uneditable. On **create** the app writes `status = -2` on the SC and
+`DRAFT` / `DISPATCHING` on the activity. On **append** all three fields are deleted from
+the payload, so FSM keeps what the revision already has and a planner's scheduling
+survives a second smartform being attached. The values live in `SC_STATUS` /
+`ACTIVITY_STATE` in `utils/fsmConstants.js`.
 
 Before sending, the ServiceCall payload is sanitized: **identifier references**
 (`businessPartner`, `responsibles`, `serviceProduct`, …) are reduced to exactly one
@@ -623,7 +635,9 @@ already exist - matched by **UDF**, not by code:
 
 If they exist, the new smartform is **appended** to the existing activity (one SC +
 one Activity per revision level, shared across smartform tables). If not, they are
-**created**.
+**created**. The two existence flags are evaluated independently, so the mixed case
+(revision SC exists, its activity does not) creates the activity with the full
+`DRAFT` / `DISPATCHING` state while leaving the SC's status untouched.
 
 #### Revision ServiceCall code
 
@@ -720,7 +734,14 @@ session token is required; see [Security Notes](#-security-notes)).
 | `UdoValue` | `.10` | Approval lookup: read `z_Linker_ApprovalActivity_Status` per smartform |
 
 > DTO versions and UDF external IDs are centralized in `utils/fsmConstants.js`.
-> The approval lookup and the `Genehmigt` value live under the `APPROVAL` export.
+> The approval lookup and the `Genehmigt` value live under the `APPROVAL` export;
+> the revision status/stage values under `SC_STATUS` and `ACTIVITY_STATE`.
+>
+> **Type codes vs status codes:** both are negative strings and they overlap. On a
+> ServiceCall, `-1` as a **type** is "Inspection" (`TYPE.SERVICE_CALL_ORIGINAL`) while
+> `-1` as a **status** is "Closed"; `-2` as a status is "Bereit zur Planung". The
+> `ServiceCall.27` query DTO surfaces them as `typeCode`/`typeName` and
+> `statusCode`/`statusName`.
 
 ---
 
@@ -752,7 +773,7 @@ tns-fsm-revisionext-ui/
 │
 ├── # ─────────── BACKEND SERVICES ───────────
 ├── utils/
-│   ├── fsmConstants.js              # Destination name, DTO versions, UDF ids, type codes, approval consts
+│   ├── fsmConstants.js              # Destination name, DTO versions, UDF ids, type + status codes, revision state, approval consts
 │   ├── fsmPayloadUtils.js           # Stateless payload transforms (header/activity/refs/nulls)
 │   ├── FsmHttpClient.js             # FSM HTTP/auth layer: Query + Composite-Tree GETs, headers
 │   ├── RevisionReadService.js       # Read pipeline: revision tree + per-smartform tables (approval gate, deep-links)
@@ -820,9 +841,11 @@ cf logs tns-fsm-revisionext-ui-sandbox            # live tail
 |-------|-------|----------|
 | Web UI extension shows nothing / 401 on first call | JWT session not established before `/api/v1/*` fired | Check logs for `SHELL-INIT: session issued`. If `SHELL-INIT: rejected — JWT validation failed`, the JWKS URL/region is wrong (`FSM_JWKS_URL`). If `AUTH: rejected ... source=none`, the Bearer token didn't attach (bootstrap ordering). |
 | Created revision doesn't appear in the table | Its smartform is still **open** on an Original-only table, OR the revision activity wasn't linked | Open revision smartforms show with red "Open" status. If a row is fully missing, verify `previousActivity` was set (the post-create Activity PATCH) and the SC carries `Z_RevisionOfActivity` + `Z_revisionNumber`. |
+| New revision isn't in the **planning list** - not dispatchable, not editable | The original ServiceCall was closed and its `status` was copied onto the revision SC (FSM hides the activities of a closed SC) | Fixed: the revision SC is written with `status = '-2'` and the activity with `DRAFT` / `DISPATCHING` on create; the fields are omitted on append so the original's closed status can never be PATCHed over a revision. If it recurs, run `SELECT w.statusCode, w.statusName FROM ServiceCall w WHERE w.code = '<sc>-<act>-Rev-NNN'` - `-1` "Closed" means the transform didn't run. Remember `-1` as a **type** code is "Inspection"; don't read it as the status. |
 | `405 METHOD_NOT_ALLOWED` on SC write | Wrong HTTP method for create vs append | Create uses **POST** to the collection (no id, no `forceUpdate`); append uses **PATCH** to the SC id. |
 | `Argument validation failed (field=businessPartner) ... Exactly one value out of id/code/externalId` | A reference object carried multiple identifiers | Handled by `reduceIdentifierRefs` in `fsmPayloadUtils` (id → externalId → code). If a new ref type appears, confirm it isn't excluded. |
 | `Cannot invoke "Object.toString()" because "value" is null` | Explicit `null` sent on create | Handled by `stripNulls` in `fsmPayloadUtils`. Check the logged payload for any remaining nulls. |
+| `... not part of ActivityDTO_V43` on the SC write | A read-only / unknown field reached the activity write DTO | The read shape is not the write shape. `workflowStep(s)` and friends are stripped in `transformRevisionActivity`; add the rejected field to that strip list. |
 | Revision number repeats (e.g. two Rev-2) | A second create fired before the first revision's smartform was visible, or gappy historical data | Numbering counts existing revision rows; open rows now count too. Gappy legacy data (Rev-3 with no Rev-1) can collide - the UDF-based create-or-append check absorbs most cases. |
 | Wrong next revision number per table | Per-table count includes only that table's rows | Expected: each smartform table numbers its own revisions. |
 | No tables shown | No closed **and approved** inspection smartforms on the original activity | Tables form only from **closed** inspection smartforms on the Original whose approval status is `Genehmigt`. Check the `[DEBUG][approval]` logs: `rows=0` means no linker row was found (query/field issue); a status other than `'Genehmigt'` (e.g. `'Offen'`) means the original isn't approved yet and is correctly hidden. |
@@ -890,6 +913,7 @@ writes do not log (kept quiet by design).
 - ServiceCall header + Activity + smartform payload assembly
 - UDF-based create-or-append: one SC + one Activity per revision level, shared across tables
 - SC code `<origCode>-<actCode>-Rev-NNN` (unique per original activity; fixes CA-202 sibling collision)
+- Revision SC/activity forced plannable on create (SC `status = -2`, activity `DRAFT` / `DISPATCHING`); the same fields omitted on append, so a closed original can never be copied over a revision and a planner's scheduling survives
 - Identifier-reference reduction + null stripping for FSM validation
 - `previousActivity` + `Z_Activity_Type` set via post-create Activity PATCH
 - `Z_FollowUpRevisions` maintenance on the original activity (new activities only)
@@ -949,4 +973,4 @@ Internal use only - Company proprietary.
 
 ---
 
-**Last Updated:** July 2026
+**Last Updated:** September 2026

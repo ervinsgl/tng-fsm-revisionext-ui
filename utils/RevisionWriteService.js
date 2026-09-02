@@ -174,24 +174,11 @@ class RevisionWriteService {
         payloadUtils.transformRevisionHeader(tree, originalCode, nextRevisionNumber, existingServiceCallId);
 
         // Capture the original activity's Z_FollowUpRevisions BEFORE the
-        // transform strips it (the activity transform removes this UDF), and
-        // its responsibles as BARE ID STRINGS.
-        //
-        // Why the responsibles are captured here: the composite-tree create
-        // accepts responsibles (201, no error) but does NOT persist them —
-        // verified on Rev-007, where [{"id":"3C25…"}] went out and the saved
-        // activity came back with []. They are therefore re-applied on the
-        // step-2b Data API PATCH, which does persist. Note the shape differs
-        // per API: composite-tree uses [{id}], the Data API wants ["<id>"].
+        // transform strips it (the activity transform removes this UDF).
         let existingFollowUps = null;
-        let originalResponsibles = [];
         if (Array.isArray(tree.activities)) {
             const origAct = tree.activities.find(a => a && a.id === originalActivityId) || tree.activities[0];
-            if (origAct) {
-                existingFollowUps = payloadUtils.udfCompositeTree(origAct, UDF.FOLLOW_UP_REVISIONS);
-                originalResponsibles = (Array.isArray(origAct.responsibles) ? origAct.responsibles : [])
-                    .map(r => this._personId(r)).filter(Boolean);
-            }
+            if (origAct) existingFollowUps = payloadUtils.udfCompositeTree(origAct, UDF.FOLLOW_UP_REVISIONS);
         }
 
         // Activity transform: code = revision code, id = existing activity id
@@ -247,7 +234,6 @@ class RevisionWriteService {
             activityCode,
             revisionCode,
             followUpPayload,
-            originalResponsibles,
             originalActivityId,
             originalServiceCallId,
             companyId,
@@ -441,6 +427,8 @@ class RevisionWriteService {
      *   3) POST the smartform with object.objectId = that activity id.
      *   3b) PATCH the revision activity's supportingPersons when the smartform's
      *      responsiblePerson is on neither responsibles nor supportingPersons.
+     *      Revision activities are created UNASSIGNED (no responsibles) so they
+     *      land in the planning list; only supportingPersons is ever written.
      *   4) On create, PATCH the original activity's Z_FollowUpRevisions with the
      *      real activity link substituted.
      *
@@ -473,17 +461,14 @@ class RevisionWriteService {
         }
 
         // 2b) CREATE branch only. The composite-tree create does not persist
-        //     previousActivity (read pipeline filters on it) NOR responsibles
-        //     (verified Rev-007: [{"id":"3C25…"}] sent, [] saved). Both are
-        //     re-applied here via the Data API, which does persist them.
+        //     previousActivity on a new child activity, and the read pipeline
+        //     filters on it, so it is set here via the Data API.
         //
-        //     The smartform's responsiblePerson is compared IN MEMORY against
-        //     the original activity's responsibles — no query needed, because
-        //     the activity was just created: its responsibles are exactly what
-        //     we are setting on this same call, and its supportingPersons are
-        //     empty (the composite-tree transform strips them). So if the
-        //     technician is not among the responsibles, they are the one and
-        //     only supporting person, and the whole thing is a single PATCH.
+        //     The revision activity is deliberately created UNASSIGNED — no
+        //     responsibles — so it appears in the planning list and a planner
+        //     schedules it later. The smartform's technician therefore always
+        //     goes to supportingPersons: there is nothing to compare against,
+        //     because the activity has no responsible yet.
         //
         //     Data API shape is a bare id array (["<uuid>"]), NOT the
         //     composite-tree [{ id }] reference shape.
@@ -496,18 +481,13 @@ class RevisionWriteService {
                 ]
             };
 
-            const originalResponsibles = Array.isArray(built.originalResponsibles) ? built.originalResponsibles : [];
-            if (originalResponsibles.length) {
-                linkPayload.responsibles = originalResponsibles;
-            }
-
             const sfPerson = this._personId(smartformPayload && smartformPayload.responsiblePerson);
-            if (sfPerson && !originalResponsibles.includes(sfPerson)) {
+            if (sfPerson) {
                 linkPayload.supportingPersons = [sfPerson];
                 supportingPersonAdded = true;
             }
 
-            console.log(`[createRevision] Revision activity ${newActivityId} (${activityCode}): responsibles=${JSON.stringify(originalResponsibles)} supportingPersons=${JSON.stringify(linkPayload.supportingPersons || [])}`);
+            console.log(`[createRevision] Revision activity ${newActivityId} (${activityCode}) created unassigned: supportingPersons=${JSON.stringify(linkPayload.supportingPersons || [])}`);
             await this._patchActivity(newActivityId, linkPayload);
         }
 
