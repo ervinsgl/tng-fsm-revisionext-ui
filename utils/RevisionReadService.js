@@ -11,11 +11,18 @@
  * around (no subqueries, no reliable cross-DTO joins) are handled by sequential
  * queries with batched IN clauses and JS glue — never per-row looping.
  *
- * Three methods are public because the write service consumes them:
- *   getRevisionServiceCalls, getServiceCallIdByRevision, getRevisionActivityId.
+ * Methods consumed by the write service (public):
+ *   getRevisionServiceCalls, getServiceCallIdByRevision, getRevisionActivity,
+ *   getRevisionSmartformId.
  * The rest of the surface is the two UI entry points:
  *   getInspectionSmartformsForActivity, getActivityRevisionTree,
  *   getActivityTreeWithSmartforms.
+ *
+ * Error contract of the UI entry points: a TOTAL failure (the activity tree or
+ * the table build cannot be completed) is THROWN, so the route answers 502 and
+ * the UI can show an error instead of an empty result. A genuinely missing
+ * activity still returns an empty structure. Per-activity smartform lookups
+ * and approval lookups keep degrading quietly as before.
  *
  * @file utils/RevisionReadService.js
  * @module utils/RevisionReadService
@@ -26,7 +33,7 @@
 
 const fsmHttp = require('./FsmHttpClient');
 const DestinationService = require('./DestinationService');
-const { DTO, UDF, REQUIRED_TAG, APPROVAL, DESTINATION_NAME } = require('./fsmConstants');
+const { DTO, UDF, TYPE, REQUIRED_TAG, APPROVAL, DESTINATION_NAME } = require('./fsmConstants');
 
 class RevisionReadService {
 
@@ -74,7 +81,7 @@ class RevisionReadService {
      * @private
      */
     async _getChecklistInstances(objectId) {
-        const query = `SELECT w.id, w.template, w.description, w.closed, w.lastChanged, w.udf.Z_PreviousChecklist, w.udf.Z_PruefberichtNr FROM ChecklistInstance w WHERE w.object.objectId = '${objectId}'`;
+        const query = `SELECT w.id, w.template, w.description, w.closed, w.lastChanged, w.udf.${UDF.PREVIOUS_CHECKLIST}, w.udf.${UDF.PRUEFBERICHT_NR} FROM ChecklistInstance w WHERE w.object.objectId = '${objectId}'`;
         const data = await fsmHttp.makeQueryRequest(query, DTO.CHECKLIST_INSTANCE);
 
         if (!data.data || data.data.length === 0) return [];
@@ -95,7 +102,7 @@ class RevisionReadService {
                 lastChanged: w.lastChanged != null ? Number(w.lastChanged) : 0,
                 // Z_PreviousChecklist links a smartform to its predecessor;
                 // when it equals own id, the smartform is an original (root).
-                // Selecting w.udf.Z_PreviousChecklist explicitly makes FSM return
+                // Selecting w.udf.<PREVIOUS_CHECKLIST> explicitly makes FSM return
                 // it inside udfValues WITH the `name` field (a bare SELECT w omits
                 // `name`, leaving only meta/value, which cannot be matched).
                 previousChecklist: this._udf(w, UDF.PREVIOUS_CHECKLIST),
@@ -197,12 +204,13 @@ class RevisionReadService {
     async _getAttachmentForSmartform(smartformId, activityId) {
         if (!smartformId || !activityId) return null;
 
-        const query = `SELECT w.udf.Z_Attachment_Description, w.fileName FROM Attachment w WHERE w.sourceObject.objectId = '${smartformId}' AND w.object.objectId = '${activityId}'`;
+        const query = `SELECT w.udf.${UDF.ATTACHMENT_DESCRIPTION}, w.fileName FROM Attachment w WHERE w.sourceObject.objectId = '${smartformId}' AND w.object.objectId = '${activityId}'`;
         const data = await fsmHttp.makeQueryRequest(query, DTO.ATTACHMENT);
 
         if (!data.data || data.data.length === 0) return null;
 
-        const w = data.data[0].w;
+        // {"data":[{}]} = attachment found but both projected columns empty.
+        const w = data.data[0].w || {};
         return {
             fileName: w.fileName || '',
             description: this._udf(w, UDF.ATTACHMENT_DESCRIPTION) || ''
@@ -268,6 +276,9 @@ class RevisionReadService {
 
             return result;
         } catch (error) {
+            // Per-activity failure: degrades to "no smartforms for this
+            // activity" (unchanged behaviour). Total failures are thrown by the
+            // tree / table builders below.
             console.error('RevisionReadService: Error building inspection smartforms:', error.message);
             return [];
         }
@@ -376,7 +387,7 @@ class RevisionReadService {
         // ServiceCall codes (e.g. '8200002124-Rev-004-7'), so a bare-code match
         // would never find the SC it just created and would create a new one
         // every time. The UDFs are stable regardless of the stored code.
-        const query = `SELECT w.id, w.udf.Z_RevisionOfActivity, w.udf.Z_revisionNumber FROM ServiceCall w WHERE w.udf.Z_RevisionOfActivity = '${originalCode}' AND w.udf.Z_revisionNumber = '${n}'`;
+        const query = `SELECT w.id, w.udf.${UDF.REVISION_OF_ACTIVITY}, w.udf.${UDF.REVISION_NUMBER} FROM ServiceCall w WHERE w.udf.${UDF.REVISION_OF_ACTIVITY} = '${originalCode}' AND w.udf.${UDF.REVISION_NUMBER} = '${n}'`;
         const data = await fsmHttp.makeQueryRequest(query, DTO.SERVICE_CALL);
         if (!data.data || data.data.length === 0) return null;
         const w = data.data[0].w;
@@ -384,22 +395,91 @@ class RevisionReadService {
     }
 
     /**
-     * Look up the revision Activity for a given level (one activity per level).
-     * Matched via its ServiceCall (suffix-proof): the activity's object.objectId
-     * points at the level-N ServiceCall. Public: consumed by the write service.
+     * Look up the revision Activity that lives under a level-N revision
+     * ServiceCall. Public: consumed by the write service.
+     *
+     * Matched by the ServiceCall ALONE (object.objectId), NOT by
+     * previousActivity / Z_Activity_Type: those two fields are written by the
+     * create flow's step 2b, so filtering on them hid an activity whose step 2b
+     * had failed, and a retry then created a second activity (O1). A revision
+     * ServiceCall is built from a tree that carries only the one original
+     * activity segment, so it holds exactly one revision activity.
+     *
+     * Selection:
+     *   1. the activity already linked to the original (previousActivity), else
+     *   2. an UNLINKED activity whose code is this level's revision activity
+     *      code (`<actCode>-Rev-NNN`, an FSM suffix like '-2' tolerated) —
+     *      that is an activity this app created whose step 2b failed.
+     * Any other activity under the SC (e.g. one a planner added) is never
+     * taken over: with no match the result is null and a new revision
+     * activity is created, exactly as before this change. Several unlinked
+     * activities that all carry the revision code is an inconsistent state;
+     * it throws rather than guessing.
+     *
+     * @param {string|null} serviceCallId - the level-N revision ServiceCall id
      * @param {string} originalActivityId - the original activity id
-     * @param {string} serviceCallId - the level-N ServiceCall id (or null)
-     * @returns {Promise<string|null>} existing activity id, or null if none
+     * @param {string} activityCode - this level's revision activity code
+     *        (fsmPayloadUtils.buildActivityCode)
+     * @returns {Promise<{id: string, previousActivity: string|null, linked: boolean}|null>}
+     *          null when there is no SC or no matching activity under it.
      */
-    async getRevisionActivityId(originalActivityId, serviceCallId) {
-        if (!originalActivityId || !serviceCallId) return null;
-        // The revision activity links to its ServiceCall via object.objectId, is
-        // a revision type, and points back to the original via previousActivity.
-        const query = `SELECT w.id, w.object.objectId FROM Activity w WHERE w.previousActivity = '${originalActivityId}' AND w.udf.Z_Activity_Type = '-7' AND w.object.objectId = '${serviceCallId}'`;
+    async getRevisionActivity(serviceCallId, originalActivityId, activityCode) {
+        if (!serviceCallId || !originalActivityId) return null;
+
+        const query = `SELECT w.id, w.previousActivity, w.code FROM Activity w WHERE w.object.objectId = '${serviceCallId}'`;
         const data = await fsmHttp.makeQueryRequest(query, DTO.ACTIVITY);
-        if (!data.data || data.data.length === 0) return null;
-        const w = data.data[0].w;
-        return (w && w.id) ? w.id : null;
+        const rows = (data && Array.isArray(data.data) ? data.data : [])
+            .map(item => (item && item.w) || {})
+            .filter(w => w.id);
+        if (rows.length === 0) return null;
+
+        const toResult = w => ({
+            id: w.id,
+            previousActivity: w.previousActivity || null,
+            linked: !!originalActivityId && w.previousActivity === originalActivityId
+        });
+
+        const linked = rows.find(w => w.previousActivity === originalActivityId);
+        if (linked) return toResult(linked);
+
+        // Unlinked: accept only this level's own revision activity code
+        // (exact, or with an FSM auto-suffix such as '33219-Rev-001-2').
+        const codeMatches = rows.filter(w =>
+            !w.previousActivity && activityCode &&
+            (w.code === activityCode || String(w.code || '').startsWith(`${activityCode}-`))
+        );
+        if (codeMatches.length === 1) return toResult(codeMatches[0]);
+        if (codeMatches.length > 1) {
+            throw new Error(`Revision ServiceCall ${serviceCallId} holds ${codeMatches.length} unlinked activities with code ${activityCode}. Resolve in FSM before retrying.`);
+        }
+        return null;
+    }
+
+    /**
+     * Find a revision smartform already attached to an activity for a given
+     * chain predecessor (Z_PreviousChecklist). Used by the create flow to skip
+     * a second POST when a retry follows a failure after the smartform was
+     * created (O3). Within one activity, a chain predecessor identifies exactly
+     * one revision smartform (one table, one revision level).
+     *
+     * Filters in JS rather than in CoreSQL so the query stays the same shape as
+     * the proven _getChecklistInstances projection.
+     *
+     * @param {string} activityId - revision activity id
+     * @param {string} previousChecklistId - the new smartform's Z_PreviousChecklist
+     * @returns {Promise<string|null>} existing smartform id, or null if none
+     */
+    async getRevisionSmartformId(activityId, previousChecklistId) {
+        if (!activityId || !previousChecklistId) return null;
+
+        const query = `SELECT w.id, w.udf.${UDF.PREVIOUS_CHECKLIST} FROM ChecklistInstance w WHERE w.object.objectId = '${activityId}'`;
+        const data = await fsmHttp.makeQueryRequest(query, DTO.CHECKLIST_INSTANCE);
+        const rows = (data && Array.isArray(data.data)) ? data.data : [];
+
+        const hit = rows
+            .map(item => (item && item.w) || {})
+            .find(w => w.id && this._udf(w, UDF.PREVIOUS_CHECKLIST) === previousChecklistId);
+        return hit ? hit.id : null;
     }
 
     /**
@@ -412,7 +492,7 @@ class RevisionReadService {
     async getRevisionServiceCalls(originalCode) {
         if (!originalCode) return new Map();
 
-        const query = `SELECT w.id, w.udf.Z_RevisionOfActivity, w.udf.Z_revisionNumber FROM ServiceCall w WHERE w.udf.Z_RevisionOfActivity = '${originalCode}'`;
+        const query = `SELECT w.id, w.udf.${UDF.REVISION_OF_ACTIVITY}, w.udf.${UDF.REVISION_NUMBER} FROM ServiceCall w WHERE w.udf.${UDF.REVISION_OF_ACTIVITY} = '${originalCode}'`;
         const data = await fsmHttp.makeQueryRequest(query, DTO.SERVICE_CALL);
 
         const map = new Map();
@@ -436,7 +516,7 @@ class RevisionReadService {
      * @private
      */
     async _getRevisionActivities(originalActivityId) {
-        const query = `SELECT w.id, w.object.objectId, w.subject, w.code FROM Activity w WHERE w.previousActivity = '${originalActivityId}' AND w.udf.Z_Activity_Type = '-7'`;
+        const query = `SELECT w.id, w.object.objectId, w.subject, w.code FROM Activity w WHERE w.previousActivity = '${originalActivityId}' AND w.udf.${UDF.ACTIVITY_TYPE} = '${TYPE.ACTIVITY_REVISION}'`;
         const data = await fsmHttp.makeQueryRequest(query, DTO.ACTIVITY);
 
         if (!data.data) return [];
@@ -457,6 +537,10 @@ class RevisionReadService {
      * Build the activity revision tree for the activity currently in context.
      * Resolves the original activity (whether context is original or revision),
      * then lists original + all revisions ordered by revision number ascending.
+     *
+     * Returns [] when the context activity (or its original) does not exist.
+     * THROWS when FSM cannot be queried, so the caller can report a failure
+     * instead of showing an empty history.
      *
      * @param {string} contextActivityId - Activity id from the FSM context
      * @returns {Promise<Array<Object>>}
@@ -528,7 +612,7 @@ class RevisionReadService {
             return [originalRow, ...revisions];
         } catch (error) {
             console.error('RevisionReadService: Error building activity revision tree:', error.message);
-            return [];
+            throw error;
         }
     }
 
@@ -564,6 +648,10 @@ class RevisionReadService {
      * Fetches Inspection smartforms for EVERY activity (original + revisions),
      * groups them into tables by root (original) smartform via the
      * Z_PreviousChecklist chain, and fills attachment columns per populated row.
+     *
+     * THROWS on a total failure (tree query, table build),
+     * so the route answers 502 and the UI shows an error. Returns an empty
+     * structure only when the activity genuinely does not exist.
      *
      * @param {string} contextActivityId - Activity id from the FSM context
      * @returns {Promise<{activities: Array<Object>, tables: Array<Object>, originalServiceCallId?: string, originalActivityId?: string, originalCode?: string}>}
@@ -745,11 +833,17 @@ class RevisionReadService {
                 });
             });
 
+            // A failed lookup for ONE row only blanks that row's attachment
+            // columns (logged); it must not fail the whole view.
             await Promise.all(populatedRows.map(async row => {
-                const att = await this._getAttachmentForSmartform(row.smartformId, row.id);
-                if (att) {
-                    row.attachmentName = att.fileName || '';
-                    row.attachmentDescription = att.description || '';
+                try {
+                    const att = await this._getAttachmentForSmartform(row.smartformId, row.id);
+                    if (att) {
+                        row.attachmentName = att.fileName || '';
+                        row.attachmentDescription = att.description || '';
+                    }
+                } catch (e) {
+                    console.error(`RevisionReadService: attachment lookup failed for smartform ${row.smartformId} on activity ${row.id}:`, e.message);
                 }
             }));
 
@@ -758,8 +852,10 @@ class RevisionReadService {
 
             return { activities, tables, originalServiceCallId, originalActivityId, originalCode };
         } catch (error) {
+            // Total failure: re-throw so the route answers 502 and the UI shows
+            // an error instead of an empty (and misleading) history.
             console.error('RevisionReadService: Error building tree with smartforms:', error.message);
-            return { activities: [], tables: [] };
+            throw error;
         }
     }
 }

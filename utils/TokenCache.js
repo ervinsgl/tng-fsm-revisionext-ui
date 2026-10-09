@@ -7,16 +7,21 @@
  * Key Features:
  * - Cache OAuth tokens for reuse
  * - Automatic token refresh before expiry (5 minute buffer)
+ * - Concurrent refreshes share ONE token request (see getToken)
  * - Handle rate limiting errors gracefully
  *
  * Token Flow:
  * 1. Check if cached token is still valid
- * 2. If expired or missing, fetch new token from FSM
+ * 2. If expired or missing, fetch new token from FSM — or join a fetch that
+ *    another caller already started
  * 3. Cache token with expiry timestamp
  *
  * Rate Limiting:
  * FSM may return 'too_many_requests' error if token requests are excessive.
- * Service throws descriptive error with retry-after time.
+ * Service throws descriptive error with retry-after time. The shared
+ * in-flight request exists to avoid exactly this: the read pipeline fires
+ * several queries in parallel (Promise.all), and when the token expires they
+ * would otherwise each request a new token at the same moment.
  *
  * @file TokenCache.js
  * @module utils/TokenCache
@@ -39,11 +44,20 @@ class TokenCache {
          * @private
          */
         this.tokenExpiry = null;
+
+        /**
+         * Token request in progress, shared by concurrent callers.
+         * @type {Promise<string>|null}
+         * @private
+         */
+        this._inFlight = null;
     }
 
     /**
      * Get FSM OAuth token (cached).
-     * Returns cached token if still valid, otherwise fetches new one.
+     * Returns cached token if still valid, otherwise fetches a new one. If a
+     * fetch is already running, waits for that one instead of starting a
+     * second request.
      * @param {Object} destination - Destination configuration from BTP
      * @returns {Promise<string>} Access token
      */
@@ -53,7 +67,11 @@ class TokenCache {
             return this.cachedToken;
         }
 
-        return this._fetchNewToken(destination);
+        if (!this._inFlight) {
+            this._inFlight = this._fetchNewToken(destination)
+                .finally(() => { this._inFlight = null; });
+        }
+        return this._inFlight;
     }
 
     /**

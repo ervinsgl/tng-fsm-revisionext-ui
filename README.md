@@ -4,7 +4,7 @@ A SAP Fiori application for SAP Field Service Management (FSM), operated as an F
 
 > **Version:** 0.0.1
 > **Platform:** SAP BTP Cloud Foundry
-> **Last Updated:** September 2026
+> **Last Updated:** October 2026
 
 ---
 
@@ -34,6 +34,7 @@ A SAP Fiori application for SAP Field Service Management (FSM), operated as an F
 - [The Create Revision Flow](#-the-create-revision-flow)
 - [API Reference](#-api-reference)
 - [Project Structure](#-project-structure)
+- [Offline Tests](#-offline-tests)
 - [Troubleshooting](#-troubleshooting)
 - [Application Details](#-application-details)
 - [Current Status](#-current-status)
@@ -49,6 +50,7 @@ A SAP Fiori application for SAP Field Service Management (FSM), operated as an F
 | 2 | Expanded Revision Table | One table expanded showing Original + revision rows with Open/Closed status | ⬜ TODO |
 | 3 | Create Revision - Confirmation Dialog | Next revision number, SC/Activity codes (NEW/EXISTS), smartform description | ⬜ TODO |
 | 4 | Create Revision - Success Dialog | Confirmation after the revision is created | ⬜ TODO |
+| 5 | Load Error Strip | Red "could not be loaded" message with Retry link | ⬜ TODO |
 
 **Screenshot folder:** `docs/screenshots/`
 
@@ -70,11 +72,13 @@ It integrates with FSM Web UI (Shell Extension), auto-detecting the activity in 
 - ✅ Tables sorted **newest-first** by the root smartform's last-changed
 - ✅ One-click **Create Revision** per table: assembles and submits ServiceCall + Activity + smartform
 - ✅ Automatic **create-or-append** logic - one ServiceCall and one Activity per revision level, shared across smartform tables
+- ✅ **Retry-safe create** - pressing Create again after a failure finishes the revision without duplicates
 - ✅ Per-table **revision numbering** computed live from existing rows
 - ✅ Maintains the original activity's **Z_FollowUpRevisions** links automatically
+- ✅ A failed load is shown as an **error with Retry**, never as an empty history
 - ✅ Context activity auto-resolution from FSM Web UI Shell
 - ✅ Collapsible, responsive tables
-- ✅ Direct FSM **Query API**, **Composite-Tree API**, and **Data API** integration via SAP BTP Destination Service
+- ✅ Direct FSM **Query API**, **Composite-Tree API**, and **Data API** integration via SAP BTP Destination Service (destination cached in memory)
 
 **Technology Stack:**
 - **Frontend:** SAP UI5 (Fiori)
@@ -125,6 +129,7 @@ The app is operated as an **FSM Web UI Shell Extension**. Code for the FSM Mobil
 │  │  2. One collapsible table per inspection smartform                    │ │
 │  │  3. Per-table "Create Revision" button                                │ │
 │  │  4. Confirm dialog → execute → success dialog → refresh               │ │
+│  │  5. Load failure → error strip with Retry                             │ │
 │  └───────────────────────────┬───────────────────────────────────────────┘ │
 │                              │                                              │
 │  ┌───────────────────────────▼──────────────────────────────────────────┐ │
@@ -143,8 +148,8 @@ The app is operated as an **FSM Web UI Shell Extension**. Code for the FSM Mobil
                                │ OAuth Token
                                ▼
                       ┌─────────────────┐
-                      │ BTP Destination │  (FSM_OAUTH_CONNECT destination)
-                      │    Service      │
+                      │ BTP Destination │  (FSM_OAUTH_CONNECT destination,
+                      │    Service      │   cached 10 min in the app)
                       └────────┬────────┘
                                │ Authenticated Request
                                ▼
@@ -173,6 +178,8 @@ Understanding RevisionExt requires a few FSM-specific concepts:
 | **Revision state** | A revision is always created as plannable work: ServiceCall `status = '-2'` ("Bereit zur Planung"), activity `status = 'DRAFT'` + `executionStage = 'DISPATCHING'`, unassigned (`responsibles` stripped). Never inherited from the original, which is usually already closed. Set on **create only**; appends leave the revision's own state alone. |
 | **Approval gate (`Genehmigt`)** | An original smartform forms a table **only** when its approval status is `Genehmigt` (approved). Status comes from the `Linker_Object` UDO (`z_Linker_ApprovalActivity_Status`); anything else (e.g. `Offen`) is hidden, since revisions are only relevant once the original is approved. |
 | **Open vs Closed smartforms** | Closed smartforms always show. Open smartforms show **only for revisions** (so freshly created revisions are visible immediately); open smartforms on the **Original** are hidden, since the inspection isn't finished. |
+| **`Z_FollowUpRevisions` owner** | Written **only by this app** (no FSM Business Rule writes it). The app rebuilds the whole value on each write, so a Business Rule must not be added for this field. |
+| **Retry-safe create** | FSM has no cross-object transaction. Every create step checks FSM before it writes, so pressing **Create Revision** again after a failure finishes the revision without duplicating anything (see [Retry Safety](#5-retry-safety)). |
 
 ---
 
@@ -189,6 +196,7 @@ Understanding RevisionExt requires a few FSM-specific concepts:
 | **Create Revision Button** | One per table, in the panel header toolbar. Opens a confirmation dialog with the next revision number and the create-or-append decision, then executes on confirm. |
 | **Confirmation Dialog** | Shows next revision number, the revision ServiceCall and Activity codes (with NEW / EXISTS status), and the smartform description, with **Create** / **Close** buttons. |
 | **Success Dialog** | After execution, confirms the revision number created for the smartform, then refreshes the tables. |
+| **Load Error Strip** | If the revision tables cannot be loaded (backend 502 / network), a red message with a **Retry** link is shown. A failed load is never shown as an empty history; a genuinely empty activity shows the blue "No smartforms" message instead. |
 
 ### Revision Read Pipeline
 
@@ -203,6 +211,13 @@ The app resolves a single context activity into a full grouped revision view:
 | **Attachments** | Attachment file name + description per populated smartform row | Query API (`Attachment.19`) |
 | **Activity deep-links** | Full FSM Shell URL per row (Code column hyperlink) | BTP Destination (`FSM_OAUTH_CONNECT`: base URL + company id) |
 
+**Error handling:** a total failure (the revision tree or the table build cannot be
+completed) is thrown, so `/api/v1/activity-revisions` answers **502** and the UI shows
+the error strip. An activity that does not exist still returns an empty result. A
+failed smartform lookup for a single activity, a failed attachment lookup for a
+single row (attachment columns left blank), and a failed approval lookup
+(fail-closed) still degrade quietly - each is logged.
+
 *Backend module: `utils/RevisionReadService.js` (HTTP via `utils/FsmHttpClient.js`).*
 
 ### Revision Write Pipeline
@@ -212,9 +227,9 @@ A single "Create Revision" click runs sequential FSM calls:
 | Step | Call | Purpose |
 |------|------|---------|
 | 1 | **POST/PATCH** Composite-Tree ServiceCall | Create the revision SC (POST) or append the activity to an existing one (PATCH). Carries the transformed header + activity. |
-| 2 | **PATCH** Activity (Data API) | Set `previousActivity` + `Z_Activity_Type` on the newly created revision activity (composite-tree create does not persist these). Skipped when appending to an existing activity. |
-| 3 | **POST** ChecklistInstance | Create the new smartform, attached to the revision activity, chained via `Z_PreviousChecklist`. |
-| 4 | **PATCH** Activity (Data API) | Update the **original** activity's `Z_FollowUpRevisions` UDF with the new revision link - only when a new revision activity was created. |
+| 2 | **PATCH** Activity (Data API) | Set `previousActivity` + `Z_Activity_Type` on the revision activity (composite-tree create does not persist these). Runs for a new activity, and again for an existing activity that is not yet linked (repair after an earlier failure). |
+| 3 | **POST** ChecklistInstance | Create the new smartform, attached to the revision activity, chained via `Z_PreviousChecklist`. Skipped if a smartform with the same `Z_PreviousChecklist` is already on the activity. |
+| 4 | **PATCH** Activity (Data API) | Update the **original** activity's `Z_FollowUpRevisions` UDF with the revision link. Built on every run; the PATCH is skipped when the field already holds the correct lines (the normal case when a second smartform joins an existing level). |
 
 *Backend module: `utils/RevisionWriteService.js` (payload transforms in `utils/fsmPayloadUtils.js`).*
 
@@ -278,6 +293,9 @@ Additional Properties:
 The backend reads these via `utils/DestinationService.js` and `utils/FsmHttpClient.js`,
 attaching `account`/`company` as query params and the `X-Account-ID` / `X-Company-ID` /
 `X-Client-ID` / `X-Client-Version` headers to every FSM call.
+
+> The destination is cached in memory for **10 minutes**. A change made in the BTP
+> cockpit takes effect after at most 10 minutes, or immediately after `cf restage`.
 
 ### FSM Access
 
@@ -360,6 +378,8 @@ cf deploy mta_archives/<archive>.mtar
 DEV deploys from the committed `mta.yaml`; QA/PROD are promoted via cTMS / Cloud ALM,
 not a direct `cf deploy`. See the change-workflow doc.
 
+> Run the [Offline Tests](#-offline-tests) before every deploy.
+
 ### 6. Set the JWKS URL (inbound auth)
 
 ```bash
@@ -370,6 +390,14 @@ cf restage tns-fsm-revisionext-ui-sandbox
 
 Optional (a DE-region default exists in code), but set explicitly per environment.
 Required for the Web UI JWT verification to succeed.
+
+**Optional — destination cache TTL.** The `FSM_OAUTH_CONNECT` destination is cached
+in memory for **10 minutes** (see [Outbound](#outbound-app--fsm-api)). Override only if needed:
+
+```bash
+cf set-env tns-fsm-revisionext-ui-sandbox DESTINATION_CACHE_TTL_MS 300000   # 5 min; 0 = no cache
+cf restage tns-fsm-revisionext-ui-sandbox
+```
 
 ### 7. Get the Application URL
 
@@ -525,12 +553,14 @@ https://tns-fsm-revisionext-ui-sandbox-xxx.cfapps.eu10-004.hana.ondemand.com
 │  4. Build one table per root; rows = covered activities only    │
 │  5. Fetch attachments for populated rows                        │
 │  6. Sort tables newest-first by root smartform lastChanged      │
+│  (total failure → HTTP 502)                                     │
 └──────────────────────────┬──────────────────────────────────────┘
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  Frontend renders: collapsed panel per smartform table,         │
 │  Original row highlighted, Status column color-coded,           │
 │  search + expand/collapse all, per-table "Create Revision"      │
+│  (on 502: red error strip with Retry)                           │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -541,7 +571,7 @@ https://tns-fsm-revisionext-ui-sandbox-xxx.cfapps.eu10-004.hana.ondemand.com
 | 1 | User opens an Activity in FSM Web UI and launches **Revisions** | App opens in the Shell iframe |
 | 2 | Context received | `ContextService` resolves the Activity `cloudId` and establishes a session token (Web UI: JWT → token) |
 | 3 | Revision tree loaded | `/api/v1/activity-revisions` returns activities + per-smartform tables |
-| 4 | Tables rendered | One collapsible panel per inspection smartform, newest-first |
+| 4 | Tables rendered | One collapsible panel per inspection smartform, newest-first. If the load fails (backend answers 502), a red error strip with **Retry** is shown instead |
 | 5 | Original row highlighted | Blue highlight, always first |
 | 6 | Status shown | Each revision row shows Open/Closed (color-coded) |
 | 7 | User clicks **Create Revision** on a table | Confirmation dialog with next number + create/append decision |
@@ -555,11 +585,12 @@ https://tns-fsm-revisionext-ui-sandbox-xxx.cfapps.eu10-004.hana.ondemand.com
 └──────────────────────────┬──────────────────────────────────────┘
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  2. Fetch FSM_OAUTH_CONNECT destination → FSM URL + OAuth config│
+│  2. Fetch FSM_OAUTH_CONNECT destination (cached 10 min)         │
 └──────────────────────────┬──────────────────────────────────────┘
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  3. Get FSM OAuth token (cached, 5 min pre-expiry buffer)       │
+│  3. Get FSM OAuth token (cached, 5 min pre-expiry buffer;       │
+│     parallel refreshes share one request)                        │
 └──────────────────────────┬──────────────────────────────────────┘
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -569,6 +600,15 @@ https://tns-fsm-revisionext-ui-sandbox-xxx.cfapps.eu10-004.hana.ondemand.com
 
 *Outbound is handled by `utils/FsmHttpClient.js` (destination + token via
 `utils/DestinationService.js` and `utils/TokenCache.js`).*
+
+**Caching.** Without the destination cache, every FSM call first made two calls to
+BTP (OAuth token + destination). With it, one table load needs about **30** outbound
+calls instead of about **82**. Concurrent lookups share one request, failures are not
+cached, and a destination change in the BTP cockpit applies after at most 10 minutes
+(or immediately after a restage). The app does not use the destination's
+`authTokens`; the FSM token is always fetched by `TokenCache`. When the FSM token is
+about to expire, parallel queries share one token request, which keeps the app clear
+of FSM's token rate limit.
 
 ---
 
@@ -599,7 +639,7 @@ Smartform description: Revision - 3: Genehmigt - Testing
 | **ServiceCall header** | `id` = existing SC id (append) or absent (create); `code` = `<origCode>-<actCode>-Rev-NNN`; `subject` = the assembled code; `type` = `-8`; **`status` = `-2` ("Bereit zur Planung") on create, removed entirely on append**; `externalId` removed; upsert `Z_RevisionOfActivity` + `Z_revisionNumber`. |
 | **Activity segment** | `id` = existing activity id or absent; `code` = `<actCode>-Rev-NNN`; `previousActivity` = original id; subject rewritten (keeps bracketed suffix); **`status` = `DRAFT` + `executionStage` = `DISPATCHING` on create, both removed entirely on append**; upsert `Z_UpdateAttributes`, `Z_Act_RevisionOfActivity` (deep link), `Z_Activity_Type='-7'`; remove `Z_FollowUpRevisions`, `Z_Act_S4ItemDescription`; attachments cleared. |
 | **Smartform** | Copied from the table's root smartform; `description` prefixed `Revision - N: `; `closed: false`; `Z_PreviousChecklist` = last smartform in the table (or root); `Z_PruefberichtNr` = original root's value; fresh UUID v4 `checklistId`; `object.objectId` = the revision activity. |
-| **Follow-up** | `Z_FollowUpRevisions` update for the **original** activity - appends the new revision line. Only built when a new revision activity is created. |
+| **Follow-up** | `Z_FollowUpRevisions` update for the **original** activity - replaces any prior line for this revision level and appends the new one. Built on every run; only sent when the value changes. |
 
 **Status and execution stage are never inherited.** The composite tree is fetched from
 the **original** ServiceCall on every run - including on append, where the whole
@@ -625,8 +665,15 @@ The next revision number is computed **per table** (count of existing revision r
 already exist - matched by **UDF**, not by code:
 
 - ServiceCall: `WHERE w.udf.Z_RevisionOfActivity = '<origCode>' AND w.udf.Z_revisionNumber = '<N>'`
-- Activity: matched via its ServiceCall (`previousActivity = '<origActId>'` AND
-  `Z_Activity_Type = '-7'` AND `object.objectId = '<revScId>'`)
+- Activity: looked up under its ServiceCall (`object.objectId = '<revScId>'`), then
+  1. the activity linked to the original (`previousActivity`) is used; otherwise
+  2. an **unlinked** activity whose code is this level's revision code
+     (`<actCode>-Rev-NNN`, FSM suffix tolerated) is used and **repaired** - that is
+     an activity this app created whose link step failed.
+
+  Any other activity under the SC (e.g. one a planner added) is never taken over; a
+  new revision activity is created instead. Several unlinked activities that all carry
+  the revision code stop the create with an error, and nothing is written.
 
 > **Why UDF, not code:** FSM auto-suffixes duplicate ServiceCall codes (e.g.
 > `8200002124-Rev-004-7`), so a bare-code match would never find the SC the app
@@ -658,9 +705,10 @@ CA-202: Object [ServiceCall:...] doesn't have a unique code [8200008332-Rev-001]
 With the activity code in the middle, `8200008332-33219-Rev-001` and
 `8200008332-33223-Rev-001` are distinct, so sibling activities never collide. The
 revision-number regex (`/-Rev-0*(\d+)/i`) still parses correctly, since the code
-still ends in `-Rev-NNN`. The two assembly sites - `RevisionWriteService`
-(`revisionCode`, drives the preview) and `fsmPayloadUtils` (`tree.code`, what's
-written) - are kept in lock-step.
+still ends in `-Rev-NNN`. The format is defined **once**, in
+`fsmPayloadUtils.buildRevisionCode` (SC code) and `buildActivityCode` (activity
+code); both the preview (`RevisionWriteService.revisionCode`) and the written
+payload (`transformRevisionHeader`) call it, so they cannot drift apart.
 
 ### 4. Execution (on Confirm)
 
@@ -673,11 +721,12 @@ executes sequentially:
    response, take its real UUID.
 3. **Set `previousActivity` + `Z_Activity_Type`** - direct
    `PATCH /api/data/v4/Activity/<newId>` (composite-tree create does not persist
-   these). Only when a new activity was created.
+   these). For a new activity, and for an existing activity that is not yet linked.
 4. **Create smartform** - `POST /api/data/v4/ChecklistInstance` with
-   `object.objectId` = the real activity UUID.
+   `object.objectId` = the real activity UUID. Skipped if the activity already has a
+   smartform with the same `Z_PreviousChecklist`.
 5. **Follow-up** - `PATCH` the original activity's `Z_FollowUpRevisions` with the
-   real UUID substituted into the link (only when a new activity was created).
+   real UUID substituted into the link. Skipped when the value would not change.
 
 The tables then refresh and a success dialog confirms:
 
@@ -688,6 +737,29 @@ Revision number 3 made for smartform 'Revision - 3: Genehmigt - Testing'.
 > **Smartform visibility:** New smartforms are created `closed: false`. Open
 > revision smartforms **do** appear (with red "Open" status), so a freshly created
 > revision is visible immediately. They become "Closed" once approved in FSM.
+
+### 5. Retry Safety
+
+FSM offers no transaction across ServiceCall, Activity and ChecklistInstance, so a
+create can fail half-way. Each step therefore checks FSM before writing:
+
+| Failed at | What a retry finds | What the retry does |
+|-----------|--------------------|---------------------|
+| SC write | nothing | normal create |
+| Activity link (step 3 above) | SC + unlinked activity | re-links the activity, then continues |
+| Smartform | SC + linked activity, no smartform | creates the smartform + audit line |
+| Follow-up | everything except the audit line | skips the smartform, writes the audit line |
+
+A retry with the **same revision number** (press Create again in the same screen, or
+reload after a failure before the smartform step) always ends in the correct state:
+one SC, one activity, one smartform per table, one audit line per level. The error
+dialog says so (`errCreatingRetryHint`): retry on the same screen, don't reload, don't
+clean up in FSM.
+
+**Known limit:** if the **follow-up** step fails and the user **reloads** before
+retrying, the table already shows the new smartform, so the next create is Rev-N+1
+and the Rev-N line in `Z_FollowUpRevisions` stays missing. Add it manually in that
+case (format: `<actCode> Rev-N: <activity link>`).
 
 ---
 
@@ -705,9 +777,9 @@ session token is required; see [Security Notes](#-security-notes)).
 | POST | `/web-container-access-point` | open (Mobile entry) | Receive + store context from FSM Mobile (keyed by `userName-cloudId`), issue a session cookie. |
 | POST | `/` | open (Mobile entry) | Alternative web container entry point (same handler). |
 | GET | `/web-container-context?session=<key>` | requireSession | Frontend retrieves its stored context. |
-| GET | `/api/v1/activity-revisions?objectId=<id>` | requireSession | Full revision tree + per-smartform tables for an activity. |
+| GET | `/api/v1/activity-revisions?objectId=<id>` | requireSession | Full revision tree + per-smartform tables for an activity. Answers **502** when the tree cannot be built. |
 | GET | `/api/v1/service-call-tree?serviceCallId=&keepActivityId=&originalCode=&rootSmartformId=&lastSmartformId=&rootPruefberichtNr=&nextRevisionNumber=` | requireSession | Build + preview the next-revision payloads (no writes). |
-| POST | `/api/v1/create-revision` | requireSession | Execute the create flow (SC write → activity link → smartform → follow-up). Body: `{ serviceCallId, keepActivityId, originalCode, smartform }`. |
+| POST | `/api/v1/create-revision` | requireSession | Execute the create flow (SC write → activity link → smartform → follow-up). Retry-safe. Body: `{ serviceCallId, keepActivityId, originalCode, smartform }`. |
 
 ### FSM APIs Used (Outbound)
 
@@ -726,14 +798,15 @@ session token is required; see [Security Notes](#-security-notes)).
 |-----|---------|----------|
 | `Activity` | `.43` | Revision tree, activity core fields, existence check |
 | `ServiceCall` | `.27` | Revision number map, existence check |
-| `ChecklistInstance` | `.20` | Smartforms (read + create) |
+| `ChecklistInstance` | `.20` | Smartforms (read + create + existence check) |
 | `ChecklistTemplate` | `.21` | Template names + tags |
 | `ChecklistTag` | `.10` | "Inspection" tag resolution |
 | `Attachment` | `.19` | Attachment file name + description |
 | `UdoMeta` | `.10` | Approval lookup: resolve the `Linker_Object` UDO meta |
 | `UdoValue` | `.10` | Approval lookup: read `z_Linker_ApprovalActivity_Status` per smartform |
 
-> DTO versions and UDF external IDs are centralized in `utils/fsmConstants.js`.
+> DTO versions and UDF external IDs are centralized in `utils/fsmConstants.js` —
+> including the UDF names and the `-7` type code inside the CoreSQL queries.
 > The approval lookup and the `Genehmigt` value live under the `APPROVAL` export;
 > the revision status/stage values under `SC_STATUS` and `ACTIVITY_STATE`.
 >
@@ -774,14 +847,22 @@ tns-fsm-revisionext-ui/
 ├── # ─────────── BACKEND SERVICES ───────────
 ├── utils/
 │   ├── fsmConstants.js              # Destination name, DTO versions, UDF ids, type + status codes, revision state, approval consts
-│   ├── fsmPayloadUtils.js           # Stateless payload transforms (header/activity/refs/nulls)
+│   ├── fsmPayloadUtils.js           # Stateless payload transforms (revision codes, header/activity/refs/nulls)
 │   ├── FsmHttpClient.js             # FSM HTTP/auth layer: Query + Composite-Tree GETs, headers
-│   ├── RevisionReadService.js       # Read pipeline: revision tree + per-smartform tables (approval gate, deep-links)
-│   ├── RevisionWriteService.js      # Write pipeline: payload assembly + create flow
-│   ├── DestinationService.js        # BTP Destination handling
-│   ├── TokenCache.js                # OAuth token caching (5 min pre-expiry buffer)
+│   ├── RevisionReadService.js       # Read pipeline: revision tree + per-smartform tables (approval gate, deep-links), existence checks
+│   ├── RevisionWriteService.js      # Write pipeline: payload assembly + retry-safe create flow
+│   ├── DestinationService.js        # BTP Destination handling (10-min in-memory cache)
+│   ├── TokenCache.js                # OAuth token caching (5 min pre-expiry buffer, shared refresh)
 │   ├── FSMJwtValidator.js           # Inbound FSM JWT verification (RS256, JWKS) — Web UI auth
 │   └── requireSession.js            # Session-token middleware guarding /api/v1/*
+│
+├── # ─────────── OFFLINE TESTS (not deployed) ───────────
+├── test/
+│   ├── fakeFsm.js                   # Stateful in-memory FSM used by the tests
+│   ├── run-revision-tests.js        # Create flow + retry safety + read errors
+│   ├── run-cache-tests.js           # Destination cache + token refresh guard
+│   ├── run-frontend-tests.js        # Controller load-error behaviour
+│   └── run-route-tests.js           # index.js route status codes + error messages
 │
 └── # ─────────── FRONTEND (SAP UI5) ───────────
 webapp/
@@ -793,11 +874,11 @@ webapp/
 │
 ├── view/
 │   ├── App.view.xml                 # Root view
-│   └── RevisionExt.view.xml         # Main view: per-smartform tables (collapsible)
+│   └── RevisionExt.view.xml         # Main view: per-smartform tables (collapsible), load-error strip
 │
 ├── controller/
 │   ├── App.controller.js            # Root controller
-│   └── RevisionExt.controller.js    # Main controller: load + Create Revision flow
+│   └── RevisionExt.controller.js    # Main controller: load (+ Retry) + Create Revision flow
 │
 ├── utils/
 │   ├── ContextService.js            # Context detection (Shell / Mobile / standalone) + Web UI session init
@@ -826,6 +907,26 @@ webapp/
 
 ---
 
+## 🧪 Offline Tests
+
+No npm install and no network needed (FSM, BTP and axios are stubbed via `Module._load`):
+
+```bash
+node test/run-revision-tests.js    # create flow, retry after a failure at every step, read errors
+node test/run-cache-tests.js       # destination cache + token refresh guard (prints outbound call counts)
+node test/run-frontend-tests.js    # controller load-error behaviour
+node test/run-route-tests.js       # route status codes + error messages (express stubbed)
+```
+
+Run all four before every deploy. The `test/` folder is not needed at runtime: add
+`test/` to the build `ignore` list in `mta.yaml` (and to `.cfignore` for `cf push`). Add `VERBOSE=1` to see the service logs.
+`run-revision-tests.js` uses the real `fsmConstants.js` and `fsmPayloadUtils.js` with
+a stateful fake FSM that mimics the relevant FSM behaviour (composite-tree create does
+not persist `previousActivity`, Query-API UDFs as `{ name, value }`, the
+`{"data":[{}]}` empty-row case).
+
+---
+
 ## 🐛 Troubleshooting
 
 ### View Logs
@@ -839,8 +940,12 @@ cf logs tns-fsm-revisionext-ui-sandbox            # live tail
 
 | Issue | Cause | Solution |
 |-------|-------|----------|
+| Red message "The revision history could not be loaded" | The backend answered 502: an FSM or destination call failed while building the tables | Press **Retry**. If it persists, check `cf logs … --recent` for `Error building tree with smartforms` / `FsmHttpClient: Query API Error` / `DestinationService: Error loading destination`. This is **not** "no revisions". |
+| Preview/create fails with "Revision ServiceCall … holds N unlinked activities with code …" | Several unlinked activities with the same revision code sit under the level-N revision SC (state not created by a single app run) | Fix in FSM: keep one of them and set its `previousActivity` to the original (or delete the extras), then retry. The app writes nothing in this case. |
+| FSM calls fail with auth errors right after rotating the OAuth client secret | The destination (with the old secret) is cached for up to 10 min | `cf restage` the app after changing the destination's credentials. |
+| Destination change in BTP cockpit has no effect | The destination is cached for 10 min | Wait up to 10 min, or `cf restage` the app. |
 | Web UI extension shows nothing / 401 on first call | JWT session not established before `/api/v1/*` fired | Check logs for `SHELL-INIT: session issued`. If `SHELL-INIT: rejected — JWT validation failed`, the JWKS URL/region is wrong (`FSM_JWKS_URL`). If `AUTH: rejected ... source=none`, the Bearer token didn't attach (bootstrap ordering). |
-| Created revision doesn't appear in the table | Its smartform is still **open** on an Original-only table, OR the revision activity wasn't linked | Open revision smartforms show with red "Open" status. If a row is fully missing, verify `previousActivity` was set (the post-create Activity PATCH) and the SC carries `Z_RevisionOfActivity` + `Z_revisionNumber`. |
+| Created revision doesn't appear in the table | Its smartform is still **open** on an Original-only table, OR the revision activity wasn't linked | Open revision smartforms show with red "Open" status. If a row is fully missing, the create probably failed after the SC write: press **Create Revision** again — the retry re-links the existing activity instead of creating a new one. |
 | New revision isn't in the **planning list** - not dispatchable, not editable | The original ServiceCall was closed and its `status` was copied onto the revision SC (FSM hides the activities of a closed SC) | Fixed: the revision SC is written with `status = '-2'` and the activity with `DRAFT` / `DISPATCHING` on create; the fields are omitted on append so the original's closed status can never be PATCHed over a revision. If it recurs, run `SELECT w.statusCode, w.statusName FROM ServiceCall w WHERE w.code = '<sc>-<act>-Rev-NNN'` - `-1` "Closed" means the transform didn't run. Remember `-1` as a **type** code is "Inspection"; don't read it as the status. |
 | `405 METHOD_NOT_ALLOWED` on SC write | Wrong HTTP method for create vs append | Create uses **POST** to the collection (no id, no `forceUpdate`); append uses **PATCH** to the SC id. |
 | `Argument validation failed (field=businessPartner) ... Exactly one value out of id/code/externalId` | A reference object carried multiple identifiers | Handled by `reduceIdentifierRefs` in `fsmPayloadUtils` (id → externalId → code). If a new ref type appears, confirm it isn't excluded. |
@@ -849,7 +954,7 @@ cf logs tns-fsm-revisionext-ui-sandbox            # live tail
 | Revision number repeats (e.g. two Rev-2) | A second create fired before the first revision's smartform was visible, or gappy historical data | Numbering counts existing revision rows; open rows now count too. Gappy legacy data (Rev-3 with no Rev-1) can collide - the UDF-based create-or-append check absorbs most cases. |
 | Wrong next revision number per table | Per-table count includes only that table's rows | Expected: each smartform table numbers its own revisions. |
 | No tables shown | No closed **and approved** inspection smartforms on the original activity | Tables form only from **closed** inspection smartforms on the Original whose approval status is `Genehmigt`. Check the `[DEBUG][approval]` logs: `rows=0` means no linker row was found (query/field issue); a status other than `'Genehmigt'` (e.g. `'Offen'`) means the original isn't approved yet and is correctly hidden. |
-| `CA-202 ... doesn't have a unique code [<sc>-Rev-NNN]` | Two revisioned activities under one parent SC collided on the old `<origCode>-Rev-NNN` code format | Fixed by the `<origCode>-<actCode>-Rev-NNN` code format (unique per original activity). If it recurs, verify both assembly sites (`RevisionWriteService.revisionCode` and `fsmPayloadUtils` `tree.code`) match. |
+| `CA-202 ... doesn't have a unique code [<sc>-Rev-NNN]` | Two revisioned activities under one parent SC collided on the old `<origCode>-Rev-NNN` code format | Fixed by the `<origCode>-<actCode>-Rev-NNN` code format (unique per original activity). If it recurs, check `buildRevisionCode` in `fsmPayloadUtils` — the only place the format is defined. |
 | Code column not clickable / links to nothing | Destination lookup failed, so `activityUrl` came back empty | Check for `[DEBUG][deeplink] destination lookup failed` in the logs. The link needs the `FSM_OAUTH_CONNECT` base URL + `X-Company-ID`; empty company id yields a non-navigable link. |
 | Context not detected | Not opened from FSM Web UI | Ensure launched from FSM Web UI; standalone mode has no real context. |
 | FSM calls fail with auth errors | Destination misconfigured | Verify the `FSM_OAUTH_CONNECT` destination, OAuth credentials, and `account`/`company` additional properties. |
@@ -865,8 +970,14 @@ On a failed write, the backend logs the failing step, status, url, and FSM's res
 [createRevision] Activity PATCH FAILED status=... url=... body={...}
 ```
 
-Auth rejections log as `AUTH: rejected ... source=<cookie|bearer|none>`. Successful
-writes do not log (kept quiet by design).
+On a retry, the steps that were already done log why they are skipped:
+
+```
+[createRevision] Revision activity <id> (<code>) exists but is not linked: re-applying previousActivity + type.
+[createRevision] Smartform <id> already on activity <id> for predecessor <id>: POST skipped.
+```
+
+Auth rejections log as `AUTH: rejected ... source=<cookie|bearer|none>`.
 
 ---
 
@@ -907,6 +1018,7 @@ writes do not log (kept quiet by design).
 - Per-table live revision numbering
 - Tables sorted newest-first by root smartform last-changed
 - Per-row activity deep-links for the clickable Code column
+- Total load failures answered with HTTP 502 (never an empty result)
 
 **Revision Write Pipeline**
 - One-click Create Revision per table (confirm → execute → refresh)
@@ -916,11 +1028,13 @@ writes do not log (kept quiet by design).
 - Revision SC/activity forced plannable on create (SC `status = -2`, activity `DRAFT` / `DISPATCHING`); the same fields omitted on append, so a closed original can never be copied over a revision and a planner's scheduling survives
 - Identifier-reference reduction + null stripping for FSM validation
 - `previousActivity` + `Z_Activity_Type` set via post-create Activity PATCH
-- `Z_FollowUpRevisions` maintenance on the original activity (new activities only)
+- `Z_FollowUpRevisions` maintenance on the original activity (written only when the value changes; app is the sole writer)
+- Retry-safe create: activity found by its ServiceCall, unlinked activity repaired, smartform and audit line checked before writing
 - UUID v4 generation for new smartforms; activity-UUID substitution between calls
 
 **UI**
 - Per-smartform tables, collapsible (collapsed on load), newest-first
+- Load-error strip with Retry (a failed load is never shown as an empty history)
 - Search filter + Expand/Collapse All
 - Original-row highlighting
 - Confirmation + success dialogs
@@ -929,6 +1043,9 @@ writes do not log (kept quiet by design).
 **Architecture / Tooling**
 - FSM backend split into focused `utils/` modules (HTTP client, read/write services, payload utils, constants)
 - German + English i18n bundles
+- BTP destination cached 10 min; FSM token refreshes shared (≈ 82 → 30 outbound calls per table load)
+- Offline test suites (`test/`) for the create flow, caches, routes and load-error UI
+- Revision codes defined once (`buildRevisionCode` / `buildActivityCode`); UDF names and type codes in CoreSQL queries come from `fsmConstants`
 - Sandbox + mtar deployment split (local `cf push` / DevOps mtar)
 
 ### 📋 Planned
@@ -939,6 +1056,7 @@ writes do not log (kept quiet by design).
 - Persistent session/context storage (currently in-memory; requires `instances: 1`)
 - Eventual-consistency handling on post-create refresh (brief retry if FSM lags)
 - Collision guard for gappy legacy revision numbering
+- Known limit: follow-up step fails **and** the user reloads before retrying → Rev-N audit line must be added manually (see [Retry Safety](#5-retry-safety))
 
 ---
 
@@ -954,7 +1072,8 @@ writes do not log (kept quiet by design).
   session token. The `requireSession` middleware guards every `/api/v1/*` route;
   the token rides as `Authorization: Bearer <token>` with a sliding 60-min TTL.
 - **Outbound OAuth** to FSM via the BTP Destination Service (`FSM_OAUTH_CONNECT`);
-  credentials live in VCAP_SERVICES (BTP-managed), tokens cached in memory only.
+  credentials live in VCAP_SERVICES (BTP-managed), tokens and the destination
+  configuration cached in memory only (never logged, never written to disk).
 - **Session/context** stored **in memory**, cleared on restart. HTTPS enforced by CF.
 
 **Known gaps (tracked in `docs/SECURITY.md`)**
@@ -973,4 +1092,4 @@ Internal use only - Company proprietary.
 
 ---
 
-**Last Updated:** September 2026
+**Last Updated:** October 2026

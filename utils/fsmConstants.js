@@ -52,15 +52,18 @@ const FSM_ACCOUNT_DEFAULTS = Object.freeze({
  * FSM is version-pinned per DTO; when FSM upgrades a DTO you bump the number
  * HERE and every query/write using it follows.
  *
- * Usage map (read R / write W):
- *   ACTIVITY            R: _getActivityCore, _getRevisionActivities,
- *                          _getRevisionActivityId   W: _patchActivity
- *   ATTACHMENT          R: _getAttachmentForSmartform, _getAttachmentsBySourceIds
- *   CHECKLIST_INSTANCE  R: _getChecklistInstances, _getChecklistInstanceFull
- *                       W: _postChecklistInstance
- *   CHECKLIST_TEMPLATE  R: _getTemplatesByIds
- *   CHECKLIST_TAG       R: _getTagNamesByIds
- *   SERVICE_CALL        R: _getServiceCallIdByRevision, _getRevisionServiceCalls
+ * Usage map (read R / write W; RS = RevisionReadService, WS = RevisionWriteService):
+ *   ACTIVITY            R: RS._getActivityCore, RS._getRevisionActivities,
+ *                          RS.getRevisionActivity, WS._getActivityPersons
+ *                       W: WS._patchActivity
+ *   ATTACHMENT          R: RS._getAttachmentForSmartform, RS._getAttachmentsBySourceIds
+ *   CHECKLIST_INSTANCE  R: RS._getChecklistInstances, RS.getRevisionSmartformId,
+ *                          WS._getChecklistInstanceFull
+ *                       W: WS._postChecklistInstance
+ *   CHECKLIST_TEMPLATE  R: RS._getTemplatesByIds
+ *   CHECKLIST_TAG       R: RS._getTagNamesByIds
+ *   SERVICE_CALL        R: RS.getServiceCallIdByRevision, RS.getRevisionServiceCalls
+ *   UDO_META/UDO_VALUE  R: RS._getSmartformApprovalStatus
  *
  * @type {Readonly<Object<string,string>>}
  */
@@ -81,7 +84,8 @@ const DTO = Object.freeze({
 /**
  * UDF externalIds referenced by the read and write pipelines. These are the
  * stable external identifiers of the custom fields in FSM; renaming a UDF in
- * FSM means changing it once here.
+ * FSM means changing it once here. Both the payloads AND the CoreSQL queries
+ * (w.udf.<externalId>) take the name from here.
  *
  * Note on shape: the SAME externalId is written two ways depending on the API.
  *   - composite-tree payloads use { udfMeta: { externalId }, value }
@@ -130,7 +134,8 @@ const UDF = Object.freeze({
  *   REVISION ('-8')  a revision ServiceCall header
  *
  * Activity Z_Activity_Type:
- *   REVISION_ACTIVITY ('-7')  a revision activity (set on create + relink)
+ *   REVISION_ACTIVITY ('-7')  a revision activity (set on create + relink;
+ *                             also the filter in RS._getRevisionActivities)
  *
  * NOTE: these are TYPE codes (ServiceCall.27 surfaces them as
  * typeCode/typeName). Do not confuse them with the STATUS codes below —

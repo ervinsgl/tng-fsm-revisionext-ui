@@ -22,6 +22,52 @@
 
 const { UDF, TYPE, SC_STATUS, ACTIVITY_STATE } = require('./fsmConstants');
 
+// ─────────────────────────────────────────────────────────────────
+//  REVISION CODES (single source of truth)
+// ─────────────────────────────────────────────────────────────────
+
+/**
+ * Zero-padded revision number used in every revision code / externalId
+ * suffix: 4 -> '004' (numbers above 999 are not padded further).
+ * @param {number|string} n - revision number
+ * @returns {string}
+ */
+function padRevisionNumber(n) {
+    return String(n).padStart(3, '0');
+}
+
+/**
+ * Revision ServiceCall code: `<scCode>-<activityCode>-Rev-<NNN>`
+ * (e.g. '8200008332-33219-Rev-001').
+ *
+ * Embedding the ORIGINAL activity code makes the code unique per original
+ * activity, so two revisioned activities under the same parent ServiceCall
+ * never collide (CA-202). This is the ONLY place the format is defined: the
+ * preview (RevisionWriteService.revisionCode) and the written payload
+ * (transformRevisionHeader) both call it, so they cannot drift apart.
+ *
+ * @param {string} scCode - ORIGINAL ServiceCall code
+ * @param {string} activityCode - ORIGINAL activity code (e.g. '33219')
+ * @param {number} n - revision number
+ * @returns {string}
+ */
+function buildRevisionCode(scCode, activityCode, n) {
+    return `${scCode}-${activityCode}-Rev-${padRevisionNumber(n)}`;
+}
+
+/**
+ * Revision Activity code: `<activityCode>-Rev-<NNN>` (e.g. '19846-Rev-003').
+ * The read pipeline parses the revision number back out of this code
+ * (/-Rev-0*(\d+)/i), so the '-Rev-<NNN>' tail must stay.
+ *
+ * @param {string} activityCode - ORIGINAL activity code
+ * @param {number} n - revision number
+ * @returns {string}
+ */
+function buildActivityCode(activityCode, n) {
+    return `${activityCode}-Rev-${padRevisionNumber(n)}`;
+}
+
 /**
  * Read a UDF value from a composite-tree DTO's udfValues array.
  * Composite-tree shape differs from the Query API: each entry is
@@ -77,7 +123,7 @@ function removeCompositeUdfs(udfValues, externalIds) {
  * Transform a fetched ServiceCall composite-tree into the payload for a
  * NEW revision's ServiceCall header. MUTATES the header in place:
  *   - id -> existing SC id (append) or null (create)
- *   - code -> `<code>-<originalCode>-Rev-<NNN>` (unique per original activity)
+ *   - code -> buildRevisionCode(<code>, originalCode, N)
  *   - subject -> the assembled code
  *   - type -> revision SC type
  *   - status -> SC_STATUS.OPEN on CREATE; removed entirely on APPEND (never
@@ -97,17 +143,14 @@ function transformRevisionHeader(tree, originalCode, nextRevisionNumber, existin
     if (!tree || typeof tree !== 'object') return tree;
 
     const n = nextRevisionNumber;
-    const padded = String(n).padStart(3, '0'); // 4 -> '004', max 999
 
     // id: existing SC id (append) or null (create). PATCH composite-tree
     // with X-Create-Or-Update branches on this.
     tree.id = existingServiceCallId || null;
     if (tree.code != null) {
-        // Embed the original activity code so the revision SC code is unique
-        // per original activity (e.g. '8200008332-33219-Rev-001'). Prevents the
-        // CA-202 duplicate-SC-code collision when a parent SC has multiple
-        // revisioned activities. Must match revisionCode in RevisionWriteService.
-        tree.code = `${tree.code}-${originalCode}-Rev-${padded}`;
+        // Unique per original activity (CA-202); format defined once in
+        // buildRevisionCode, shared with RevisionWriteService's preview code.
+        tree.code = buildRevisionCode(tree.code, originalCode, n);
     }
     tree.subject = tree.code || `${originalCode} Rev-${n}`;
     // Revision ServiceCalls use TYPE.SERVICE_CALL_REVISION (original is
@@ -172,7 +215,7 @@ function transformRevisionHeader(tree, originalCode, nextRevisionNumber, existin
  * @param {number} nextRevisionNumber - last revision number + 1
  * @param {string} baseUrl - FSM base URL (for the link)
  * @param {string} companyId - numeric company id (for the link)
- * @param {string} activityCode - assembled revision activity code
+ * @param {string} activityCode - assembled revision activity code (buildActivityCode)
  * @param {string|null} existingActivityId - existing revision activity id, or null
  * @returns {Object} the mutated activity
  */
@@ -190,7 +233,7 @@ function transformRevisionActivity(act, originalActivityId, originalCode, nextRe
     // externalId gets the SAME "-Rev-<NNN>" suffix as the code, appended to
     // the ORIGINAL activity's externalId (e.g. "8200002222/110" ->
     // "8200002222/110-Rev-005"). Cleared if the original has no externalId.
-    const revSuffix = `-Rev-${String(n).padStart(3, '0')}`;
+    const revSuffix = `-Rev-${padRevisionNumber(n)}`;
     const origExternalId = (act.externalId != null && String(act.externalId).trim() !== '')
         ? String(act.externalId)
         : null;
@@ -427,6 +470,9 @@ function buildFollowUpRevisionsPayload(existingValue, originalCode, nextRevision
 }
 
 module.exports = {
+    padRevisionNumber,
+    buildRevisionCode,
+    buildActivityCode,
     udfCompositeTree,
     upsertCompositeUdf,
     removeCompositeUdfs,

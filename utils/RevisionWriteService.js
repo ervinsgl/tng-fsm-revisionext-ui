@@ -5,14 +5,22 @@
  * payloads and executes the create flow: PATCH/POST the ServiceCall
  * composite-tree, POST the ChecklistInstance smartform, PATCH the original
  * activity's follow-up links + the new activity's previousActivity, and attach
- * the smartform's responsible person to the revision activity's
- * supportingPersons when they are not already on it.
+ * each smartform's technician to the revision activity's supportingPersons.
+ *
+ * Revision activities are created UNASSIGNED — `responsibles` is never written
+ * by this app — so they land in the planning list. `responsibles` is read only,
+ * to decide whether a technician still needs a supportingPersons entry.
+ *
+ * Retry safety: FSM has no cross-object transaction, so every step of
+ * createRevision checks FSM before it writes (see createRevision). A retry
+ * with the same revision number after a failure at any step resumes at the
+ * failed step and does not duplicate what already succeeded.
  *
  * Collaborators:
  *   - FsmHttpClient   : all HTTP (query, composite-tree GET, request context)
  *   - fsmPayloadUtils : the stateless payload transforms
- *   - RevisionReadService : the three suffix-proof existence checks + the
- *                           fallback next-number computation
+ *   - RevisionReadService : the existence checks (ServiceCall, activity,
+ *                           smartform) + the fallback next-number computation
  *   - DestinationService  : base URL + company id for the revision deep-links
  *   - fsmConstants    : destination name, DTO versions, UDF ids, type codes
  *
@@ -33,6 +41,9 @@ const payloadUtils = require('./fsmPayloadUtils');
 const readSvc = require('./RevisionReadService');
 const DestinationService = require('./DestinationService');
 const { DESTINATION_NAME, FSM_ACCOUNT_DEFAULTS, DTO, UDF, TYPE } = require('./fsmConstants');
+
+/** Placeholder for the revision activity id until the activity exists. */
+const NEW_ACTIVITY_PLACEHOLDER = '<NEW_ACTIVITY_UUID>';
 
 class RevisionWriteService {
 
@@ -100,10 +111,39 @@ class RevisionWriteService {
             object: {
                 // Existing revision activity id (smartform attaches to it) or the
                 // placeholder, set once the activity is created.
-                objectId: activityObjectId || '<NEW_ACTIVITY_UUID>',
+                objectId: activityObjectId || NEW_ACTIVITY_PLACEHOLDER,
                 objectType: 'ACTIVITY'
             }
         }];
+    }
+
+    /**
+     * Read a UDF value from a Data-API-shaped payload ({ meta: { externalId }, value }).
+     * @param {Object} dto
+     * @param {string} externalId
+     * @returns {string|null}
+     * @private
+     */
+    _dataApiUdf(dto, externalId) {
+        const vals = (dto && Array.isArray(dto.udfValues)) ? dto.udfValues : [];
+        const hit = vals.find(u => u && u.meta && u.meta.externalId === externalId);
+        return hit && hit.value != null ? String(hit.value) : null;
+    }
+
+    /**
+     * Normalise a multi-line UDF value to its sorted set of non-blank lines,
+     * so two values that differ only in line order / blank lines compare equal.
+     * @param {string|null} value
+     * @returns {string}
+     * @private
+     */
+    _normaliseLines(value) {
+        return String(value == null ? '' : value)
+            .split('\n')
+            .map(l => l.trim())
+            .filter(Boolean)
+            .sort()
+            .join('\n');
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -153,22 +193,26 @@ class RevisionWriteService {
         // the activity code makes the SC code unique per original activity, so
         // two activities under the same parent SC no longer collide on
         // '<sc>-Rev-NNN' (was CA-202: duplicate SC code). One SC + one activity
-        // per original activity per revision level. Existence is checked via
-        // revision UDFs below (suffix-proof), not this code.
-        const padded = String(nextRevisionNumber).padStart(3, '0');
+        // per original activity per revision level. Format defined once in
+        // payloadUtils.buildRevisionCode (also used for the written code).
+        // Existence is checked via revision UDFs below (suffix-proof), not this code.
         const baseScCode = tree.code != null ? tree.code : originalCode;
-        const revisionCode = `${baseScCode}-${originalCode}-Rev-${padded}`;
+        const revisionCode = payloadUtils.buildRevisionCode(baseScCode, originalCode, nextRevisionNumber);
         // Suffix-proof existence check by revision UDFs (NOT bare code): FSM
         // auto-suffixes duplicate SC codes, so a code match would never find the
         // SC we just created and we'd create a new one every time.
         const existingServiceCallId = await readSvc.getServiceCallIdByRevision(originalCode, nextRevisionNumber);
 
         // Revision activity code = original activity code + same suffix
-        // (e.g. '19846-Rev-003'). One activity per revision level; check if it
-        // already exists (attach smartforms to it) or must be created. Matched
-        // via its ServiceCall (object.objectId), which is suffix-proof.
-        const activityCode = `${originalCode}-Rev-${padded}`;
-        const existingActivityId = await readSvc.getRevisionActivityId(originalActivityId, existingServiceCallId);
+        // (e.g. '19846-Rev-003'). One activity per revision level. Found by its
+        // ServiceCall alone — NOT by previousActivity / Z_Activity_Type, which
+        // step 2b writes — so an activity whose step 2b failed is still found
+        // (and repaired) instead of being created a second time.
+        const activityCode = payloadUtils.buildActivityCode(originalCode, nextRevisionNumber);
+        const existingActivity = await readSvc.getRevisionActivity(existingServiceCallId, originalActivityId, activityCode);
+        const existingActivityId = existingActivity ? existingActivity.id : null;
+        // Activity exists but step 2b never completed on it: run 2b again.
+        const activityNeedsLink = !!existingActivity && !existingActivity.linked;
 
         // Header transform (id = existing SC id or null).
         payloadUtils.transformRevisionHeader(tree, originalCode, nextRevisionNumber, existingServiceCallId);
@@ -206,12 +250,14 @@ class RevisionWriteService {
             if (smartformPayload) payloadUtils.stripNulls(smartformPayload);
         }
 
-        // Follow-up revisions PATCH payload for the ORIGINAL activity: ONLY when
-        // a NEW revision activity is created (not when attaching a smartform to
-        // an existing revision activity — that would duplicate the line).
-        const followUpPayload = existingActivityId
-            ? null
-            : payloadUtils.buildFollowUpRevisionsPayload(existingFollowUps, originalCode, nextRevisionNumber, baseUrl, companyId);
+        // Follow-up revisions PATCH payload for the ORIGINAL activity. Built on
+        // EVERY run: buildFollowUpRevisionsPayload replaces any prior line for
+        // this level, so building it again is safe, and createRevision skips
+        // the PATCH when the value would not change (the usual case when a
+        // second smartform is attached to an existing level). Building it only
+        // for a new activity meant a retry after a failure at step 3 or 4
+        // never wrote the line (O2).
+        const followUpPayload = payloadUtils.buildFollowUpRevisionsPayload(existingFollowUps, originalCode, nextRevisionNumber, baseUrl, companyId);
 
         // FSM requires exactly one of id/code/externalId on reference objects.
         // Reduce them (prefer id, then externalId, then code) before stripping
@@ -231,9 +277,11 @@ class RevisionWriteService {
             existingServiceCallId: existingServiceCallId || null,
             activityExists: !!existingActivityId,
             existingActivityId: existingActivityId || null,
+            activityNeedsLink,
             activityCode,
             revisionCode,
             followUpPayload,
+            existingFollowUps,
             originalActivityId,
             originalServiceCallId,
             companyId,
@@ -345,8 +393,7 @@ class RevisionWriteService {
      *
      * @param {string} activityId - the revision activity id
      * @returns {Promise<{responsibles: string[], supportingPersons: string[]}|null>}
-     *          null when the activity row is not returned (do NOT treat that as
-     *          "no persons" — see _syncSupportingPersons).
+     *          null only when the activity row is not returned at all.
      * @private
      */
     async _getActivityPersons(activityId) {
@@ -354,41 +401,37 @@ class RevisionWriteService {
         const data = await fsmHttp.makeQueryRequest(query, DTO.ACTIVITY);
         const rows = (data && Array.isArray(data.data)) ? data.data : null;
         // FSM returns {"data":[]} when the activity is NOT found, but
-        // {"data":[{}]} — a row with the 'w' wrapper omitted entirely — when
-        // the activity IS found and every projected column is empty (verified
-        // Rev-007). Those must not be conflated: the first is a genuine miss
-        // and fails closed, the second is a real activity with no persons yet.
-        if (!rows || rows.length === 0) {
-            return null;
-        }
+        // {"data":[{}]} — the 'w' wrapper omitted entirely — when the activity
+        // IS found and every projected column is empty (verified Rev-007).
+        // Those must not be conflated: the first is a genuine miss and fails
+        // closed, the second is a real activity with no persons yet.
+        if (!rows || rows.length === 0) return null;
         const row = rows[0].w || {};
-        const out = {
+        return {
             responsibles: (Array.isArray(row.responsibles) ? row.responsibles : [])
                 .map(p => this._personId(p)).filter(Boolean),
             supportingPersons: (Array.isArray(row.supportingPersons) ? row.supportingPersons : [])
                 .map(p => this._personId(p)).filter(Boolean)
         };
-        return out;
     }
 
     /**
-     * Make sure the new smartform's responsible person is attached to the
-     * revision activity. Several technicians can each own a smartform under the
-     * same original activity; every one of their revision smartforms hangs off
-     * the SAME revision activity, so each technician must be on that activity —
-     * as its responsible, or (when they are someone else) as a supporting
-     * person.
+     * APPEND branch: attach the smartform's technician to the revision
+     * activity's supportingPersons when they are on neither person list.
      *
-     * Already a responsible or a supporting person -> no write.
-     * Otherwise -> PATCH supportingPersons = existing list + this person.
+     * Several technicians can each own a smartform under the same original
+     * activity; every one of their revision smartforms hangs off the SAME
+     * revision activity, so each must appear on it. `responsibles` is READ
+     * ONLY — a planner sets it when the revision is scheduled, and a technician
+     * already sitting there needs no supporting entry.
      *
      * Fail-closed: if the Query API does not return the activity row we skip
-     * the PATCH entirely rather than writing a list we cannot trust, because
+     * the PATCH rather than writing a list we cannot trust, because
      * supportingPersons is a full-list replace — a PATCH built from an empty
-     * read would silently drop the technicians already on the activity.
+     * read would silently drop technicians added by earlier revisions.
      *
      * @param {string} activityId - revision activity id
-     * @param {string|null} responsiblePerson - new smartform's responsiblePerson
+     * @param {string|null} responsiblePerson - the smartform's responsiblePerson
      * @returns {Promise<boolean>} true if the activity was PATCHed
      * @private
      */
@@ -402,7 +445,6 @@ class RevisionWriteService {
             return false;
         }
 
-        // Already covered on either list -> nothing to do.
         if (persons.responsibles.includes(personId) || persons.supportingPersons.includes(personId)) {
             return false;
         }
@@ -422,27 +464,37 @@ class RevisionWriteService {
      *   1) PATCH/POST the ServiceCall composite-tree (create or append).
      *   2) Resolve the revision activity's real id (known on append; found by
      *      assembled code in the response on create).
-     *   2b) On create, PATCH the new activity to persist previousActivity +
-     *      Z_Activity_Type (composite-tree create does not persist these).
-     *   3) POST the smartform with object.objectId = that activity id.
-     *   3b) PATCH the revision activity's supportingPersons when the smartform's
-     *      responsiblePerson is on neither responsibles nor supportingPersons.
-     *      Revision activities are created UNASSIGNED (no responsibles) so they
-     *      land in the planning list; only supportingPersons is ever written.
-     *   4) On create, PATCH the original activity's Z_FollowUpRevisions with the
-     *      real activity link substituted.
+     *   2b) PATCH the activity to persist previousActivity + Z_Activity_Type
+     *      (composite-tree create does not persist these). Runs on create, and
+     *      again whenever an existing activity is not yet linked (repair after
+     *      an earlier failure at this step).
+     *   3) POST the smartform with object.objectId = that activity id — unless
+     *      a smartform with the same Z_PreviousChecklist is already on it.
+     *   3b) Existing activity only: PATCH supportingPersons when the
+     *      smartform's technician is on neither person list. A new activity
+     *      gets its technician in 2b.
+     *   4) PATCH the original activity's Z_FollowUpRevisions with the real
+     *      activity link — skipped when the value would not change.
+     *
+     * Retry safety: each step checks FSM before writing, so repeating the call
+     * with the same revision number after a failure at any step resumes at the
+     * failed step without duplicating the earlier ones.
      *
      * The payload is rebuilt fresh here so the revision number / existence
      * checks reflect current FSM state at execution time.
      *
-     * @returns {Promise<Object>} { nextRevisionNumber, revisionCode, activityCode, smartformDescription, newActivityId }
+     * @returns {Promise<Object>} { nextRevisionNumber, revisionCode, activityCode,
+     *          smartformDescription, newActivityId, supportingPersonAdded,
+     *          smartformExisted, followUpWritten }
      */
     async createRevision(originalServiceCallId, originalActivityId, originalCode, smartform) {
         const built = await this.buildNewRevisionPayload(originalServiceCallId, originalActivityId, originalCode, smartform);
         const {
-            payload, smartformPayload, followUpPayload,
-            existingServiceCallId, activityCode, revisionCode, nextRevisionNumber
+            payload, smartformPayload, followUpPayload, existingFollowUps,
+            existingServiceCallId, activityCode, revisionCode, nextRevisionNumber,
+            activityNeedsLink
         } = built;
+        const activityExisted = !!built.existingActivityId;
 
         // 1) PATCH/POST ServiceCall (create or append).
         const savedTree = await this._patchServiceCallCompositeTree(payload, existingServiceCallId);
@@ -460,20 +512,22 @@ class RevisionWriteService {
             throw new Error(`Revision activity (code ${activityCode}) not found in ServiceCall response.`);
         }
 
-        // 2b) CREATE branch only. The composite-tree create does not persist
-        //     previousActivity on a new child activity, and the read pipeline
-        //     filters on it, so it is set here via the Data API.
+        // 2b) New activity, or an existing one that is not yet linked. The
+        //     composite-tree create does not persist previousActivity on a new
+        //     child activity, and the read pipeline filters on it, so it is
+        //     set here via the Data API.
         //
         //     The revision activity is deliberately created UNASSIGNED — no
         //     responsibles — so it appears in the planning list and a planner
-        //     schedules it later. The smartform's technician therefore always
-        //     goes to supportingPersons: there is nothing to compare against,
-        //     because the activity has no responsible yet.
+        //     schedules it later. On a NEW activity the smartform's technician
+        //     therefore always goes to supportingPersons here. On a REPAIR
+        //     (activity existed, link missing) persons are left to step 3b,
+        //     which reads the live lists first.
         //
         //     Data API shape is a bare id array (["<uuid>"]), NOT the
         //     composite-tree [{ id }] reference shape.
         let supportingPersonAdded = false;
-        if (!built.existingActivityId) {
+        if (!activityExisted || activityNeedsLink) {
             const linkPayload = {
                 previousActivity: originalActivityId,
                 udfValues: [
@@ -481,30 +535,47 @@ class RevisionWriteService {
                 ]
             };
 
-            const sfPerson = this._personId(smartformPayload && smartformPayload.responsiblePerson);
-            if (sfPerson) {
-                linkPayload.supportingPersons = [sfPerson];
-                supportingPersonAdded = true;
+            if (!activityExisted) {
+                const sfPerson = this._personId(smartformPayload && smartformPayload.responsiblePerson);
+                if (sfPerson) {
+                    linkPayload.supportingPersons = [sfPerson];
+                    supportingPersonAdded = true;
+                }
+                console.log(`[createRevision] Revision activity ${newActivityId} (${activityCode}) created unassigned: supportingPersons=${JSON.stringify(linkPayload.supportingPersons || [])}`);
+            } else {
+                console.log(`[createRevision] Revision activity ${newActivityId} (${activityCode}) exists but is not linked: re-applying previousActivity + type.`);
             }
-
-            console.log(`[createRevision] Revision activity ${newActivityId} (${activityCode}) created unassigned: supportingPersons=${JSON.stringify(linkPayload.supportingPersons || [])}`);
             await this._patchActivity(newActivityId, linkPayload);
         }
 
-        // 3) POST smartform, with object.objectId = the real activity id.
+        // 3) POST smartform, with object.objectId = the real activity id —
+        //    unless an earlier attempt already created it (only possible when
+        //    the activity existed before this run).
         let smartformDescription = '';
+        let smartformExisted = false;
         if (smartformPayload) {
             if (smartformPayload.object) smartformPayload.object.objectId = newActivityId;
             smartformDescription = smartformPayload.description || '';
-            await this._postChecklistInstance(smartformPayload);
+
+            if (activityExisted) {
+                const prevChecklistId = this._dataApiUdf(smartformPayload, UDF.PREVIOUS_CHECKLIST);
+                const existingSmartformId = await readSvc.getRevisionSmartformId(newActivityId, prevChecklistId);
+                if (existingSmartformId) {
+                    smartformExisted = true;
+                    console.log(`[createRevision] Smartform ${existingSmartformId} already on activity ${newActivityId} for predecessor ${prevChecklistId}: POST skipped.`);
+                }
+            }
+            if (!smartformExisted) {
+                await this._postChecklistInstance(smartformPayload);
+            }
         }
 
-        // 3b) APPEND branch only. The revision activity already existed, so it
-        //     may already carry responsibles plus supporting persons added by
-        //     earlier smartforms. Query the live lists and append this
-        //     technician if they are on neither. The CREATE branch is already
-        //     handled in 2b (in memory, no query).
-        if (built.existingActivityId && smartformPayload) {
+        // 3b) Existing activity only. It may already carry a planner-assigned
+        //     responsible plus supporting persons added by earlier smartforms.
+        //     Query the live lists and append this technician if they are on
+        //     neither. A new activity is already handled in 2b (in memory, no
+        //     query).
+        if (activityExisted && smartformPayload) {
             try {
                 supportingPersonAdded = await this._syncSupportingPersons(
                     newActivityId,
@@ -515,15 +586,21 @@ class RevisionWriteService {
             }
         }
 
-        // 4) PATCH original activity's Z_FollowUpRevisions (only when new activity).
+        // 4) PATCH original activity's Z_FollowUpRevisions, unless the field
+        //    already holds exactly the target set of lines.
+        let followUpWritten = false;
         if (followUpPayload) {
             // Substitute the placeholder link with the real activity id.
             (followUpPayload.udfValues || []).forEach(u => {
                 if (u && typeof u.value === 'string') {
-                    u.value = u.value.split('<NEW_ACTIVITY_UUID>').join(newActivityId);
+                    u.value = u.value.split(NEW_ACTIVITY_PLACEHOLDER).join(newActivityId);
                 }
             });
-            await this._patchActivity(originalActivityId, followUpPayload);
+            const target = this._dataApiUdf(followUpPayload, UDF.FOLLOW_UP_REVISIONS);
+            if (this._normaliseLines(target) !== this._normaliseLines(existingFollowUps)) {
+                await this._patchActivity(originalActivityId, followUpPayload);
+                followUpWritten = true;
+            }
         }
 
         const result = {
@@ -532,7 +609,9 @@ class RevisionWriteService {
             activityCode,
             smartformDescription,
             newActivityId,
-            supportingPersonAdded
+            supportingPersonAdded,
+            smartformExisted,
+            followUpWritten
         };
         return result;
     }

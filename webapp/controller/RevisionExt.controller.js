@@ -17,6 +17,9 @@ sap.ui.define([
                 showError: false,
                 context: {},
                 revisionsBusy: false,
+                // True when the revision load FAILED (as opposed to returning
+                // no data). Drives the error MessageStrip with its Retry link.
+                loadError: false,
                 tables: [],
                 activities: [],
                 noSmartforms: false,
@@ -80,8 +83,10 @@ sap.ui.define([
                 // Apply the FSM UI language BEFORE flipping contextLoaded (which
                 // makes the translatable content visible). setLanguage fires
                 // localizationChanged, which the i18n ResourceModel honors, so
-                // all {i18n>...} bindings re-resolve. Shell context exposes
-                // .locale, mobile exposes .language; accept either.
+                // all {i18n>...} bindings re-resolve. Both context sources fill
+                // .language (ContextService maps the Shell's selectedLocale to
+                // it; Mobile POSTs it directly). .locale is never set today and
+                // is only read as a defensive fallback.
                 this._setAppLanguage(context.locale || context.language);
 
                 oModel.setProperty("/context", context);
@@ -130,15 +135,28 @@ sap.ui.define([
             }
         },
 
+        /**
+         * Load the revision tables for the activity in context.
+         *
+         * A failed load is shown as an error (MessageStrip with Retry, bound
+         * to /loadError) and is never rendered as an empty history: on an
+         * audit-trail screen "no revisions" and "could not load revisions"
+         * must look different.
+         *
+         * @param {string} objectId - activity id (context.cloudId)
+         * @returns {Promise<boolean>} true if the load succeeded
+         * @private
+         */
         async _loadRevisions(objectId) {
             const oModel = this.getView().getModel("view");
 
             if (!objectId) {
                 console.warn("No objectId in context; skipping revision load.");
-                return;
+                return false;
             }
 
             oModel.setProperty("/revisionsBusy", true);
+            oModel.setProperty("/loadError", false);
 
             try {
                 const result = await RevisionService.getActivityRevisions(objectId);
@@ -160,14 +178,24 @@ sap.ui.define([
                 oModel.setProperty("/noSmartforms", tables.length === 0 && activities.length > 0);
 
                 console.log(`Loaded ${tables.length} smartform table(s), ${activities.length} activity row(s) for ${objectId}`);
+                return true;
             } catch (error) {
                 console.error("Failed to load revisions:", error.message);
                 oModel.setProperty("/activities", []);
                 oModel.setProperty("/tables", []);
                 oModel.setProperty("/noSmartforms", false);
+                oModel.setProperty("/loadError", true);
+                return false;
             } finally {
                 oModel.setProperty("/revisionsBusy", false);
             }
+        },
+
+        /**
+         * Retry link on the load-error MessageStrip.
+         */
+        onRetryLoad() {
+            this._loadRevisions(this._objectId);
         },
 
         /**
@@ -255,7 +283,9 @@ sap.ui.define([
                 const nextRev = result.nextRevisionNumber;
                 const sfDesc = result.smartformDescription || "";
 
-                // Refresh tables with new data before showing success.
+                // Refresh tables with new data before showing success. If the
+                // refresh fails, the error strip is shown; the create itself
+                // still succeeded, so the success dialog is still correct.
                 if (this._objectId) {
                     await this._loadRevisions(this._objectId);
                 }
@@ -266,7 +296,11 @@ sap.ui.define([
                 );
             } catch (error) {
                 console.error("Failed to create revision:", error.message);
-                MessageBox.error(this._t("errCreating", [error.message]));
+                // The create flow is retry-safe for the SAME revision number,
+                // which is what this screen still holds (no reload after a
+                // failure) — so tell the user to retry here, not to reload or
+                // clean up in FSM.
+                MessageBox.error(this._t("errCreating", [error.message]) + "\n\n" + this._t("errCreatingRetryHint"));
             } finally {
                 oModel.setProperty("/busy", false);
             }

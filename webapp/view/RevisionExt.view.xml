@@ -58,6 +58,21 @@
                         press=".onToggleExpandAll" />
                 </Toolbar>
 
+                <!-- Revision load FAILED (backend 502 / network). Shown instead
+                     of an empty result so a failure never looks like
+                     "no revisions". -->
+                <MessageStrip
+                    id="loadErrorStrip"
+                    visible="{view>/loadError}"
+                    type="Error"
+                    showIcon="true"
+                    text="{i18n>errLoadingRevisions}"
+                    class="sapUiResponsiveMargin">
+                    <link>
+                        <Link text="{i18n>actionRetry}" press=".onRetryLoad" />
+                    </link>
+                </MessageStrip>
+
                 <!-- One small table per original-activity smartform (root).
                      Rows = activity lineage; each row carries the smartform
                      that chains (via Z_PreviousChecklist) to this root and

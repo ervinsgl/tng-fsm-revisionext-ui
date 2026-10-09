@@ -199,13 +199,17 @@ app.get('/web-container-context', requireSession, (req, res) => {
 });
 
 /**
- * GET /api/activity-revisions?objectId=<activityId>
+ * GET /api/v1/activity-revisions?objectId=<activityId>
  *
- * Returns the activity revision tree (original first, then revisions by
- * revision number) with Inspection smartforms attached to the original
- * activity. Each row:
- *   { isOriginal, revisionLabel, revisionNumber, id, code, subject,
- *     smartforms: [{ id, description, name }] }
+ * Returns the revision view for the activity in context:
+ *   { data: { activities, tables, originalServiceCallId, originalActivityId, originalCode } }
+ *   - activities: lineage rows (original first, then revisions by number)
+ *   - tables: one per approved original inspection smartform, each with its
+ *     rows, rootSmartformId, lastSmartformId and nextRevisionNumber
+ *
+ * An activity that does not exist returns { activities: [], tables: [] }.
+ * A failure to build the view answers 502, so the UI shows an error instead
+ * of an empty history.
  *
  * objectId is the cloudId (Activity UUID) resolved from the FSM context.
  */
@@ -226,13 +230,16 @@ app.get('/api/v1/activity-revisions', requireSession, async (req, res) => {
 });
 
 /**
- * GET /api/service-call-tree
+ * GET /api/v1/service-call-tree
  *   ?serviceCallId=<id>&keepActivityId=<id>&originalCode=<code>
  *   &rootSmartformId=<id>&lastSmartformId=<id>&rootPruefberichtNr=<val>
+ *   &nextRevisionNumber=<n>
  *
- * Builds the next-revision payload: transformed ServiceCall header + activity,
- * plus the new-revision smartform payload for the table whose button was
- * pressed. The next revision number is computed live (max + 1).
+ * Builds the next-revision payload (no writes): transformed ServiceCall header
+ * + activity, plus the new-revision smartform payload for the table whose
+ * button was pressed, and the create-or-append flags for the confirmation
+ * dialog. The revision number is the table's nextRevisionNumber; only when it
+ * is missing does the backend fall back to (highest existing number + 1).
  */
 app.get('/api/v1/service-call-tree', requireSession, async (req, res) => {
     const serviceCallId = req.query.serviceCallId;
@@ -255,17 +262,22 @@ app.get('/api/v1/service-call-tree', requireSession, async (req, res) => {
         return res.json({ data: tree });
     } catch (error) {
         console.error('service-call-tree route error:', error.message);
-        return res.status(502).json({ message: 'Failed to build new revision payload from FSM.' });
+        // Bare message; the frontend adds its translated prefix (errPreparing).
+        return res.status(502).json({ message: error.message || 'Unknown error' });
     }
 });
 
 /**
- * POST /api/create-revision
+ * POST /api/v1/create-revision
  * Body: { serviceCallId, keepActivityId, originalCode, smartform: {...} }
  *
- * Executes the full create flow: PATCH ServiceCall (create/append) -> POST
- * smartform (with the created activity id) -> PATCH original activity's
- * Z_FollowUpRevisions (only when a new revision activity was created).
+ * Executes the full create flow (RevisionWriteService.createRevision):
+ * ServiceCall create/append -> link the revision activity -> POST smartform
+ * -> PATCH the original activity's Z_FollowUpRevisions. Each step checks FSM
+ * before writing, so a retry after a failure is safe.
+ *
+ * On failure the response message is the bare error text; the frontend adds
+ * its own translated "Failed to create revision" prefix (errCreating).
  */
 app.post('/api/v1/create-revision', requireSession, async (req, res) => {
     const { serviceCallId, keepActivityId, originalCode, smartform } = req.body || {};
@@ -279,7 +291,7 @@ app.post('/api/v1/create-revision', requireSession, async (req, res) => {
         return res.json({ data: result });
     } catch (error) {
         console.error('create-revision route error:', error.message);
-        return res.status(502).json({ message: 'Failed to create revision: ' + error.message });
+        return res.status(502).json({ message: error.message || 'Unknown error' });
     }
 });
 
